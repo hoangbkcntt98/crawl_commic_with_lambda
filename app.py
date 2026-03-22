@@ -521,6 +521,55 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 },
             }
 
+
+        if action == "list_browse_links":
+            browse_url = event["browse_url"]
+            wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
+            max_pages = int(event.get("max_pages", 1))
+            sort = event.get("sort", "views_week")
+            result = list_browse_links(
+                browse_url=browse_url,
+                wait_sec=wait_sec,
+                max_pages=max_pages,
+                sort=sort,
+            )
+            return {
+                "statusCode": 200,
+                "body": {
+                    "ok": True,
+                    "action": action,
+                    **result,
+                },
+            }
+
+        if action == "list_browse_links_to_s3":
+            browse_url = event["browse_url"]
+            bucket = event["bucket"]
+            wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
+            max_pages = int(event.get("max_pages", 1))
+            sort = event.get("sort", "views_week")
+            links_key = event.get("links_key", "crawler-test/links.json")
+            html_key = event.get("html_key", "crawler-test/list.html")
+            page_title = event.get("page_title", "Manga Links")
+            result = crawl_browse_links_to_s3(
+                browse_url=browse_url,
+                bucket=bucket,
+                links_key=links_key,
+                html_key=html_key,
+                wait_sec=wait_sec,
+                max_pages=max_pages,
+                sort=sort,
+                page_title=page_title,
+            )
+            return {
+                "statusCode": 200,
+                "body": {
+                    "ok": True,
+                    "action": action,
+                    **result,
+                },
+            }
+
         return {
             "statusCode": 400,
             "body": {
@@ -540,6 +589,227 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "chromedriver_log_tail": read_chromedriver_tail(),
             },
         }
+
+
+def build_browse_page_url(browse_url: str, page: int = 1, sort: str | None = "views_week") -> str:
+    base = browse_url.split("?")[0]
+    params: List[str] = []
+    if page > 1:
+        params.append(f"page={page}")
+    if sort:
+        params.append(f"sort={sort}")
+    if not params:
+        return base
+    return f"{base}?{'&'.join(params)}"
+
+
+def extract_image_url_from_card(card: Any, page_url: str) -> str | None:
+    img = card.select_one("img")
+    if not img:
+        return None
+
+    for attr in ["src", "data-src", "data-original", "data-lazy-src", "srcset"]:
+        value = img.get(attr)
+        if not value:
+            continue
+        value = value.strip()
+        if not value:
+            continue
+        if attr == "srcset":
+            value = pick_from_srcset(value)
+            if not value:
+                continue
+        if value.startswith("data:"):
+            continue
+        return urljoin(page_url, value)
+    return None
+
+
+def extract_title_from_card(card: Any) -> str:
+    title_tag = card.select_one("h3") or card.select_one("a[title]")
+    if title_tag:
+        title = (title_tag.get("title") or title_tag.get_text() or "").strip()
+        if title:
+            return title
+
+    first_link = card.select_one("a[href*='/manga/']") or card.select_one("a[href]")
+    if first_link:
+        title = (first_link.get("title") or first_link.get_text() or "").strip()
+        if title:
+            return title
+
+    return "untitled"
+
+
+def get_read_url_from_detail_page(driver: webdriver.Chrome, detail_url: str, wait_sec: int = DEFAULT_WAIT_SEC) -> str | None:
+    driver.get(detail_url)
+    WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.TAG_NAME, "body"))
+    )
+    time.sleep(wait_sec)
+
+    candidates = [
+        (By.CSS_SELECTOR, "a[href*='/read?id=']"),
+        (By.XPATH, "//a[contains(@href, '/read?id=') and contains(normalize-space(.), '今すぐ読む')]"),
+        (By.XPATH, "//span[contains(normalize-space(.), '今すぐ読む')]/ancestor::a[1]"),
+    ]
+
+    for by, selector in candidates:
+        try:
+            elements = driver.find_elements(by, selector)
+            for el in elements:
+                href = (el.get_attribute("href") or "").strip()
+                if "/read?id=" in href:
+                    return href
+        except Exception:
+            pass
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    for a in soup.select("a[href*='/read?id=']"):
+        href = (a.get("href") or "").strip()
+        if href:
+            return urljoin(detail_url, href)
+
+    return None
+
+
+def list_browse_links(
+    browse_url: str,
+    wait_sec: int = DEFAULT_WAIT_SEC,
+    max_pages: int = 1,
+    sort: str | None = "views_week",
+) -> Dict[str, Any]:
+    driver = build_driver()
+    items: List[Dict[str, Any]] = []
+    seen_read_urls = set()
+
+    try:
+        for page in range(1, max_pages + 1):
+            page_url = build_browse_page_url(browse_url, page=page, sort=sort)
+            logger.info("Opening browse page=%s", page_url)
+            driver.get(page_url)
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            time.sleep(wait_sec)
+
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            cards = soup.select("ul.grid > li") or soup.select("main ul li")
+
+            for card in cards:
+                detail_anchor = card.select_one("a[href*='/manga/']") or card.select_one("a[href]")
+                if not detail_anchor:
+                    continue
+
+                detail_href = (detail_anchor.get("href") or "").strip()
+                if not detail_href:
+                    continue
+
+                detail_url = urljoin(page_url, detail_href)
+                image_url = extract_image_url_from_card(card, page_url)
+                title = extract_title_from_card(card)
+
+                try:
+                    read_url = get_read_url_from_detail_page(driver, detail_url, wait_sec=wait_sec)
+                except Exception as e:
+                    logger.warning("Failed resolving read_url for %s: %s", detail_url, e)
+                    read_url = None
+
+                if not read_url or read_url in seen_read_urls:
+                    continue
+
+                seen_read_urls.add(read_url)
+                items.append(
+                    {
+                        "title": title,
+                        "detail_url": detail_url,
+                        "read_url": read_url,
+                        "image_url": image_url,
+                    }
+                )
+    finally:
+        driver.quit()
+
+    return {
+        "browse_url": browse_url,
+        "max_pages": max_pages,
+        "sort": sort,
+        "count": len(items),
+        "items": items,
+        "pairs": [[item["read_url"], item["image_url"]] for item in items],
+    }
+
+
+def save_json_to_s3(bucket: str, key: str, payload: Any) -> Dict[str, Any]:
+    s3 = boto3.client("s3")
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+        CacheControl="no-cache",
+    )
+    return {
+        "bucket": bucket,
+        "key": key,
+        "s3_uri": f"s3://{bucket}/{key}",
+    }
+
+
+def save_text_to_s3(bucket: str, key: str, text: str, content_type: str = "text/html; charset=utf-8") -> Dict[str, Any]:
+    s3 = boto3.client("s3")
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=text.encode("utf-8"),
+        ContentType=content_type,
+        CacheControl="no-cache",
+    )
+    return {
+        "bucket": bucket,
+        "key": key,
+        "s3_uri": f"s3://{bucket}/{key}",
+    }
+
+
+def crawl_browse_links_to_s3(
+    browse_url: str,
+    bucket: str,
+    links_key: str,
+    html_key: str,
+    wait_sec: int = DEFAULT_WAIT_SEC,
+    max_pages: int = 1,
+    sort: str | None = "views_week",
+    page_title: str = "Manga Links",
+) -> Dict[str, Any]:
+    result = list_browse_links(
+        browse_url=browse_url,
+        wait_sec=wait_sec,
+        max_pages=max_pages,
+        sort=sort,
+    )
+    payload = {
+        "title": page_title,
+        "browse_url": browse_url,
+        "sort": sort,
+        "max_pages": max_pages,
+        "count": result["count"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "items": result["items"],
+        "pairs": result["pairs"],
+    }
+    json_result = save_json_to_s3(bucket, links_key, payload)
+    links_public_url = f"https://{bucket}.s3.ap-northeast-1.amazonaws.com/{links_key}"
+    return {
+        "count": result["count"],
+        "items_preview": result["items"][:10],
+        "pairs_preview": result["pairs"][:10],
+        "links_json": json_result,
+        "links_json_public_url": links_public_url,
+        "list_html_public_url": f"https://{bucket}.s3.ap-northeast-1.amazonaws.com/{html_key}",
+    }
+
 def load_manifest_from_s3(bucket: str, key: str) -> Dict[str, Any]:
     s3 = boto3.client("s3")
     try:
