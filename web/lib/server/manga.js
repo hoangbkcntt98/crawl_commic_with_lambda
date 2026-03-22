@@ -18,10 +18,10 @@ import { getJsonFromS3, getJsonFromS3OrNull, invokeLambda, objectExists, putJson
 import {
   buildLegacyTitlePaths,
   buildLibraryEntry,
-  buildTitleAssetBase,
   buildTitlePaths,
+  canUseLegacyTitlePaths,
   chapterSortValue,
-  slugifyTitle
+  extractMangaId
 } from "@/lib/utils";
 
 export async function getLibrary() {
@@ -107,7 +107,7 @@ export async function triggerLibrarySync() {
 
 export async function findMangaBySlug(slug) {
   const library = await getLibrary();
-  const item = library.items.find((entry) => entry.slug === slugifyTitle(slug));
+  const item = library.items.find((entry) => entry.slug === String(slug));
   return { library, item };
 }
 
@@ -117,10 +117,13 @@ export async function getMangaManifest(slug, title = "") {
   }
 
   const primaryPaths = buildTitlePaths(slug, title);
-  const legacyPaths = buildLegacyTitlePaths(slug);
+  const legacyPaths = buildLegacyTitlePaths(title, slug);
   const candidates = [primaryPaths];
 
-  if (legacyPaths.manifestKey !== primaryPaths.manifestKey) {
+  if (
+    canUseLegacyTitlePaths(title, slug) &&
+    legacyPaths.manifestKey !== primaryPaths.manifestKey
+  ) {
     candidates.push(legacyPaths);
   }
 
@@ -168,7 +171,8 @@ export async function triggerMangaDownload(slug) {
     throw new Error("Manga not found in library.");
   }
 
-  const paths = buildTitlePaths(slug, item.title);
+  const mangaId = extractMangaId(item.read_url) || String(slug);
+  const paths = buildTitlePaths(mangaId, item.title);
   const payload = {
     action: "upload_title_to_s3",
     start_url: item.read_url,

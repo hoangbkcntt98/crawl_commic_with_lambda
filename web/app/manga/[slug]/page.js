@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 export default async function MangaReaderPage({ params }) {
   const { slug } = await params;
   const data = await getReaderData(slug);
+  console.log("Reader data:", slug);
 
   return <ReaderClient item={data.item} manifest={data.manifest} slug={slug} />;
 }

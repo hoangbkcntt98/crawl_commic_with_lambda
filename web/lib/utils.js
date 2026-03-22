@@ -16,19 +16,25 @@ export function sanitizeStorageName(value) {
     .trim() || "untitled";
 }
 
-export function buildTitlePaths(slug, title = "") {
-  const safeSlug = slugifyTitle(slug);
-  const storageName = sanitizeStorageName(title || slug);
+export function extractMangaId(readUrl) {
+  const raw = String(readUrl || "");
+  const match = raw.match(/[?&]id=([^&#]+)/i);
+  return match?.[1]?.trim() || "";
+}
+
+export function buildTitlePaths(mangaId, title = "") {
+  const safeId = String(mangaId || "").trim() || "untitled";
+  const storageName = sanitizeStorageName(title || safeId);
   return {
-    slug: safeSlug,
+    slug: safeId,
     storageName,
     prefix: `titles/${storageName}`,
     manifestKey: `titles/${storageName}/manifest.json`
   };
 }
 
-export function buildLegacyTitlePaths(slug) {
-  const safeSlug = slugifyTitle(slug);
+export function buildLegacyTitlePaths(title = "", mangaId = "") {
+  const safeSlug = slugifyTitle(title || mangaId);
   return {
     slug: safeSlug,
     storageName: safeSlug,
@@ -37,14 +43,28 @@ export function buildLegacyTitlePaths(slug) {
   };
 }
 
-export function buildTitleAssetBase(publicBaseUrl, slug, title = "") {
+export function canUseLegacyTitlePaths(title = "", mangaId = "") {
+  const safeSlug = slugifyTitle(title || mangaId);
+
+  if (!safeSlug) {
+    return false;
+  }
+
+  if (safeSlug === "untitled" && String(title || "").trim()) {
+    return false;
+  }
+
+  return true;
+}
+
+export function buildTitleAssetBase(publicBaseUrl, mangaId, title = "") {
   const safeBase = String(publicBaseUrl || "").replace(/\/+$/, "");
-  const { prefix } = buildTitlePaths(slug, title);
+  const { prefix } = buildTitlePaths(mangaId, title);
   return `${safeBase}/${prefix}`;
 }
 
 export function buildLibraryEntry(item) {
-  const slug = slugifyTitle(item.title);
+  const slug = extractMangaId(item.read_url) || slugifyTitle(item.title);
   return {
     ...item,
     slug,
