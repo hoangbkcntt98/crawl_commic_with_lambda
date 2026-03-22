@@ -1,6 +1,7 @@
 .env
 __pycache__/
 *.pyc
+web/.env
 web/.env.local
 web/node_modules/
 web/.next/
