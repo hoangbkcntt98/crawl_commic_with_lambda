@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manga Viewer</title>
+    <style>
+        :root {
+            --bg: #111;
+            --panel: #1a1a1a;
+            --panel-2: #222;
+            --panel-3: #333;
+            --text: #fff;
+            --muted: #bdbdbd;
+            --accent: #4da3ff;
+            --accent-2: #2d7dd2;
+            --danger: #ff6b6b;
+            --border: #2a2a2a;
+            --max-width: 980px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            background: rgba(17, 17, 17, 0.96);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .topbar {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 10px 14px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .title-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .site-title {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .site-subtitle {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: var(--panel-3);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: 0.2s ease;
+        }
+
+        button:hover:not(:disabled) {
+            background: #444;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .chapter-current {
+            background: var(--accent);
+            border-color: var(--accent-2);
+            color: #fff;
+        }
+
+        .chapter-strip-wrap {
+            border-top: 1px solid var(--border);
+            background: var(--panel);
+        }
+
+        #chapter-list {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding: 10px 14px;
+            scrollbar-width: thin;
+        }
+
+        .chapter-btn {
+            white-space: nowrap;
+            background: var(--panel-3);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 999px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: 0.2s ease;
+            font-size: 14px;
+        }
+
+        .chapter-btn:hover {
+            background: #444;
+        }
+
+        .chapter-btn.active {
+            background: var(--accent);
+            border-color: var(--accent-2);
+            color: #fff;
+            font-weight: 700;
+        }
+
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 14px;
+        }
+
+        .status-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+
+        .status-box {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .chapter-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .viewer-wrap {
+            min-height: 300px;
+        }
+
+        #viewer {
+            text-align: center;
+            line-height: 0;
+        }
+
+        .page-card {
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            margin: 0 auto;
+            max-width: var(--max-width);
+            overflow: hidden;
+        }
+
+        .page-meta {
+            display: none;
+        }
+
+        .page-image {
+            width: 100%;
+            display: block;
+            margin: 0 auto;
+            border-radius: 0;
+            background: #0c0c0c;
+        }
+
+        .page-error {
+            color: var(--danger);
+            padding: 24px 12px;
+            font-size: 14px;
+        }
+
+        .loading,
+        .empty,
+        .error-box {
+            max-width: var(--max-width);
+            margin: 24px auto;
+            padding: 20px;
+            border-radius: 14px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .loading {
+            color: var(--muted);
+        }
+
+        .error-box {
+            color: var(--danger);
+        }
+
+        .footer-nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0 8px;
+            flex-wrap: wrap;
+        }
+
+        .hint {
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 640px) {
+            .site-title {
+                font-size: 18px;
+            }
+
+            .chapter-title {
+                font-size: 16px;
+            }
+
+            button,
+            .chapter-btn {
+                font-size: 13px;
+            }
+
+            main {
+                padding: 10px;
+            }
+        }
+
+        .chapter-select-wrap {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .chapter-select-label {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        #chapter-select {
+            min-width: 220px;
+            max-width: 100%;
+            background: var(--panel-3);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="topbar">
+            <div class="title-wrap">
+                <div id="site-title" class="site-title">Manga Viewer</div>
+                <div id="site-subtitle" class="site-subtitle">Loading manifest...</div>
+            </div>
+
+            <div class="controls">
+                <button id="prev-top">← Chapter trước</button>
+                <button id="next-top">Chapter sau →</button>
+                <button id="scroll-top-btn">↑ Lên đầu trang</button>
+            </div>
+        </div>
+
+        <div class="chapter-strip-wrap">
+            <div class="chapter-select-wrap">
+                <label for="chapter-select" class="chapter-select-label">Chapter:</label>
+                <select id="chapter-select"></select>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="status-row">
+            <div>
+                <h1 id="chapter-title" class="chapter-title">Đang tải...</h1>
+            </div>
+            <div id="status-box" class="status-box">...</div>
+        </div>
+
+        <div class="viewer-wrap">
+            <div id="viewer"></div>
+        </div>
+
+        <div class="footer-nav">
+            <button id="prev-bottom">← Chapter trước</button>
+            <button id="next-bottom">Chapter sau →</button>
+        </div>
+
+        <div class="hint">
+            Mẹo: dùng phím ← / → để chuyển chapter
+        </div>
+    </main>
+
+    <script>
+        const MANIFEST_URL = "/crawler-test/manifest.json";
+        const ASSET_BASE = "/crawler-test";
+        const chapterSelect = document.getElementById("chapter-select");
+        const viewer = document.getElementById("viewer");
+        const siteTitleEl = document.getElementById("site-title");
+        const siteSubtitleEl = document.getElementById("site-subtitle");
+        const chapterTitleEl = document.getElementById("chapter-title");
+        const statusBoxEl = document.getElementById("status-box");
+
+        const prevTopBtn = document.getElementById("prev-top");
+        const nextTopBtn = document.getElementById("next-top");
+        const prevBottomBtn = document.getElementById("prev-bottom");
+        const nextBottomBtn = document.getElementById("next-bottom");
+        const scrollTopBtn = document.getElementById("scroll-top-btn");
+
+        let manifest = null;
+        let currentChapterIndex = 0;
+
+        function setLoading(message = "Đang tải...") {
+            viewer.innerHTML = `<div class="loading">${message}</div>`;
+        }
+
+        function setError(message) {
+            viewer.innerHTML = `<div class="error-box">${message}</div>`;
+        }
+
+        function setEmpty(message) {
+            viewer.innerHTML = `<div class="empty">${message}</div>`;
+        }
+
+        function escapeHtml(text) {
+            return String(text)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        function renderChapterButtons() {
+            chapterSelect.innerHTML = "";
+
+            manifest.chapters.forEach((ch, index) => {
+                const opt = document.createElement("option");
+                opt.value = String(index);
+                opt.textContent = `${ch.name}`;
+                if (index === currentChapterIndex) {
+                    opt.selected = true;
+                }
+                chapterSelect.appendChild(opt);
+            });
+        }
+
+        function updateNavButtons() {
+            const hasPrev = currentChapterIndex > 0;
+            const hasNext = currentChapterIndex < manifest.chapters.length - 1;
+
+            [prevTopBtn, prevBottomBtn].forEach(btn => btn.disabled = !hasPrev);
+            [nextTopBtn, nextBottomBtn].forEach(btn => btn.disabled = !hasNext);
+        }
+
+        function getChapterFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            const chapterName = params.get("chapter");
+            if (!chapterName || !manifest?.chapters?.length) return 0;
+
+            const idx = manifest.chapters.findIndex(ch => ch.name === chapterName);
+            return idx >= 0 ? idx : 0;
+        }
+
+        function updateQueryString(chapterName) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("chapter", chapterName);
+            history.replaceState({}, "", url.toString());
+        }
+
+        function renderImages(chapter) {
+            if (!chapter.files || chapter.files.length === 0) {
+                setEmpty("Chapter này chưa có ảnh.");
+                return;
+            }
+
+            const html = chapter.files.map((file, idx) => {
+                const src = `${ASSET_BASE}/${chapter.name}/${file}`;
+                return `
+    <div class="page-card">
+      <img
+        class="page-image"
+        loading="lazy"
+        decoding="async"
+        src="${src}"
+        alt="${escapeHtml(chapter.name)} - page ${idx + 1}"
+        onerror="this.outerHTML='<div class=&quot;page-error&quot;>Không tải được ảnh: ${escapeHtml(file)}</div>'"
+      />
+    </div>
+  `;
+            }).join("");
+
+            viewer.innerHTML = html;
+        }
+
+        function loadChapter(index, scrollTop = false) {
+            if (!manifest || !manifest.chapters || !manifest.chapters[index]) return;
+
+            currentChapterIndex = index;
+            const chapter = manifest.chapters[index];
+
+            chapterTitleEl.textContent = chapter.name;
+            statusBoxEl.textContent = `${index + 1} / ${manifest.chapters.length} • ${chapter.count} ảnh`;
+
+            renderChapterButtons();
+            updateNavButtons();
+            chapterSelect.value = String(index);
+            renderImages(chapter);
+            updateQueryString(chapter.name);
+
+            if (scrollTop) {
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+        }
+
+        function goPrevChapter() {
+            if (!manifest) return;
+            if (currentChapterIndex > 0) {
+                loadChapter(currentChapterIndex - 1, true);
+            }
+        }
+
+        function goNextChapter() {
+            if (!manifest) return;
+            if (currentChapterIndex < manifest.chapters.length - 1) {
+                loadChapter(currentChapterIndex + 1, true);
+            }
+        }
+
+        async function init() {
+            try {
+                setLoading("Đang tải manifest...");
+                const res = await fetch(MANIFEST_URL, { cache: "no-store" });
+
+                if (!res.ok) {
+                    throw new Error(`Không tải được manifest.json (${res.status})`);
+                }
+
+                manifest = await res.json();
+
+                if (!manifest || !Array.isArray(manifest.chapters)) {
+                    throw new Error("manifest.json không đúng format.");
+                }
+
+                const title = manifest.title || "Manga Viewer";
+                document.title = title;
+                siteTitleEl.textContent = title;
+                siteSubtitleEl.textContent =
+                    `Tổng chapter: ${manifest.chapters.length}` +
+                    (manifest.updated_at ? ` • Updated: ${manifest.updated_at}` : "");
+
+                if (manifest.chapters.length === 0) {
+                    chapterTitleEl.textContent = "Chưa có chapter";
+                    statusBoxEl.textContent = "0 chapter";
+                    setEmpty("manifest.json chưa có chapter nào.");
+                    renderChapterButtons();
+                    updateNavButtons();
+                    return;
+                }
+
+                const initialIndex = getChapterFromQuery();
+                loadChapter(initialIndex, false);
+            } catch (err) {
+                console.error(err);
+                chapterTitleEl.textContent = "Lỗi tải dữ liệu";
+                statusBoxEl.textContent = "Error";
+                setError(`Không thể khởi tạo viewer: ${err.message}`);
+            }
+        }
+
+        prevTopBtn.onclick = goPrevChapter;
+        prevBottomBtn.onclick = goPrevChapter;
+        nextTopBtn.onclick = goNextChapter;
+        nextBottomBtn.onclick = goNextChapter;
+
+        scrollTopBtn.onclick = () => {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowLeft") {
+                goPrevChapter();
+            } else if (e.key === "ArrowRight") {
+                goNextChapter();
+            }
+        });
+        chapterSelect.addEventListener("change", (e) => {
+            const index = Number(e.target.value);
+            if (!Number.isNaN(index)) {
+                loadChapter(index, true);
+            }
+        });
+
+        init();
+    </script>
+</body>
+
+</html>
