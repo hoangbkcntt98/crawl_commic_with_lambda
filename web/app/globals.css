@@ -141,6 +141,20 @@ select {
   color: var(--muted);
 }
 
+.reader-progress-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin: 0 4px 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(191, 91, 44, 0.24);
+  border-radius: 18px;
+  background: rgba(191, 91, 44, 0.08);
+  color: var(--accent-strong);
+}
+
 .cards-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
@@ -185,6 +199,11 @@ select {
   color: white;
 }
 
+.status-pill.downloading {
+  background: rgba(191, 91, 44, 0.92);
+  color: white;
+}
+
 .status-pill.idle {
   background: rgba(158, 106, 3, 0.9);
   color: white;
@@ -207,6 +226,12 @@ select {
   color: var(--muted);
   font-size: 13px;
   word-break: break-word;
+}
+
+.progress-text {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 13px;
 }
 
 .card-actions {

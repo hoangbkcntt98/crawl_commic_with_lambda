@@ -11,8 +11,16 @@ export async function GET(_request, { params }) {
       return NextResponse.json({ error: "Manga not found." }, { status: 404 });
     }
 
-    const manifest = await getMangaManifest(slug);
-    return NextResponse.json({ item, manifest });
+    const manifest = await getMangaManifest(slug, item.title);
+    return NextResponse.json({
+      item,
+      manifest,
+      progress: manifest?.progress || {
+        status: "idle",
+        expected_chapters: 0,
+        completed_chapters: 0
+      }
+    });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -5,7 +5,6 @@ import { notFound } from "next/navigation";
 import {
   BROWSE_SORT,
   BROWSE_URL,
-  DOWNLOAD_INVOCATION_TYPE,
   LIBRARY_S3_KEY,
   MAX_IMAGES_PER_CHAPTER,
   MAX_PAGES,
@@ -18,6 +17,7 @@ import { getJsonFromS3, getJsonFromS3OrNull, invokeLambda, objectExists, putJson
 import {
   buildLegacyTitlePaths,
   buildLibraryEntry,
+  buildChapterStorageName,
   buildTitlePaths,
   canUseLegacyTitlePaths,
   chapterSortValue,
@@ -147,10 +147,25 @@ export async function getMangaManifest(slug, title = "") {
         (left, right) => chapterSortValue(left.name) - chapterSortValue(right.name)
       )
     : [];
+  const expectedChapters = Number(manifest?.progress?.expected_chapters || 0);
+  const completedChapters = chapters.length;
+  const status =
+    expectedChapters > 0
+      ? completedChapters >= expectedChapters
+        ? "completed"
+        : "downloading"
+      : completedChapters > 0
+        ? "completed"
+        : "idle";
 
   return {
     ...manifest,
     chapters,
+    progress: {
+      status,
+      expected_chapters: expectedChapters,
+      completed_chapters: completedChapters
+    },
     assetBaseUrl: `${String(publicS3BaseUrl || "").replace(/\/+$/, "")}/${S3_PREFIX}/${matchedPaths.prefix}`
   };
 }
@@ -173,19 +188,62 @@ export async function triggerMangaDownload(slug) {
 
   const mangaId = extractMangaId(item.read_url) || String(slug);
   const paths = buildTitlePaths(mangaId, item.title);
-  const payload = {
-    action: "upload_title_to_s3",
-    start_url: item.read_url,
-    bucket: S3_BUCKET,
-    prefix: `${S3_PREFIX}/${paths.prefix}`,
-    manifest_key: `${S3_PREFIX}/${paths.manifestKey}`,
-    site_title: item.title,
-    wait_sec: WAIT_SEC
-  };
+  const catalogResult = await invokeLambda(
+    {
+      action: "get_catalog",
+      start_url: item.read_url,
+      wait_sec: WAIT_SEC
+    },
+    "RequestResponse"
+  );
 
-  if (MAX_IMAGES_PER_CHAPTER) {
-    payload.limit = Number(MAX_IMAGES_PER_CHAPTER);
+  const catalog = Array.isArray(catalogResult.body?.catalog) ? catalogResult.body.catalog : [];
+  if (!catalog.length) {
+    throw new Error("Khong lay duoc catalog chapter tu MangaRW.");
   }
 
-  return invokeLambda(payload, DOWNLOAD_INVOCATION_TYPE);
+  const chapterJobs = catalog.map((chapter) => {
+    const payload = {
+      action: "upload_to_s3",
+      chapter_url: chapter.url,
+      chapter_name: buildChapterStorageName(chapter),
+      bucket: S3_BUCKET,
+      prefix: `${S3_PREFIX}/${paths.prefix}`,
+      manifest_key: `${S3_PREFIX}/${paths.manifestKey}`,
+      site_title: item.title
+    };
+
+    if (MAX_IMAGES_PER_CHAPTER) {
+      payload.limit = Number(MAX_IMAGES_PER_CHAPTER);
+    }
+
+    return payload;
+  });
+
+  const existingManifest = await getJsonFromS3OrNull(S3_BUCKET, `${S3_PREFIX}/${paths.manifestKey}`);
+  await putJsonToS3(S3_BUCKET, `${S3_PREFIX}/${paths.manifestKey}`, {
+    title: item.title,
+    updated_at: new Date().toISOString(),
+    chapters: Array.isArray(existingManifest?.chapters) ? existingManifest.chapters : [],
+    progress: {
+      status: "downloading",
+      expected_chapters: chapterJobs.length,
+      completed_chapters: Array.isArray(existingManifest?.chapters) ? existingManifest.chapters.length : 0
+    }
+  });
+
+  for (const payload of chapterJobs) {
+    await invokeLambda(payload, "Event");
+  }
+
+  return {
+    statusCode: 202,
+    body: {
+      accepted: true,
+      mode: "per_chapter_event_fanout",
+      title: item.title,
+      chapter_count: chapterJobs.length,
+      manga_id: mangaId
+    }
+  };
 }

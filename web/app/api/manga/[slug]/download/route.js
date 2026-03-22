@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { DOWNLOAD_INVOCATION_TYPE } from "@/lib/config";
 import { triggerMangaDownload } from "@/lib/server/manga";
 
 export async function POST(_request, { params }) {
@@ -10,11 +9,9 @@ export async function POST(_request, { params }) {
 
     return NextResponse.json({
       ok: true,
-      invocationType: DOWNLOAD_INVOCATION_TYPE,
+      invocationType: "Event",
       message:
-        DOWNLOAD_INVOCATION_TYPE === "Event"
-          ? "Da gui job crawl len Lambda. Manifest cua title se duoc cap nhat tren S3 sau khi job chay xong."
-          : "Download va upload da hoan tat.",
+        "Da gui cac job crawl theo tung chapter len Lambda. Manifest cua title se duoc cap nhat dan tren S3 khi cac job chay xong.",
       result: result.body || null
     });
   } catch (error) {

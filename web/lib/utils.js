@@ -72,6 +72,13 @@ export function buildLibraryEntry(item) {
   };
 }
 
+export function buildChapterStorageName(chapter) {
+  const chapterNum = Number(chapter?.num || 0);
+  const safeNum = String(chapterNum).padStart(3, "0");
+  const safeTitle = sanitizeStorageName(chapter?.title || `chapter_${safeNum}`);
+  return `${safeNum} - ${safeTitle}`;
+}
+
 export function chapterSortValue(name) {
   const match = String(name || "").match(/^(\d+)/);
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;

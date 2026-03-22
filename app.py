@@ -42,6 +42,11 @@ HEADERS = {
 LAZY_ATTRS = ["src", "data-src", "data-original", "data-lazy-src", "data-cfsrc"]
 
 
+def log_progress(event_name: str, **fields: Any) -> None:
+    payload = {"event": event_name, **fields}
+    logger.info(json.dumps(payload, ensure_ascii=False))
+
+
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
@@ -119,7 +124,7 @@ def pick_from_srcset(srcset: str | None) -> str | None:
 def get_catalog_dynamic(start_url: str, wait_sec: int = DEFAULT_WAIT_SEC) -> List[Dict[str, Any]]:
     driver = build_driver()
     try:
-        logger.info("Opening start_url=%s", start_url)
+        log_progress("catalog.start", start_url=start_url, wait_sec=wait_sec)
         driver.get(start_url)
 
         WebDriverWait(driver, 20).until(
@@ -154,6 +159,7 @@ def get_catalog_dynamic(start_url: str, wait_sec: int = DEFAULT_WAIT_SEC) -> Lis
             }
         )
 
+    log_progress("catalog.done", start_url=start_url, count=len(catalog))
     return catalog
 
 
@@ -252,6 +258,12 @@ def download_images_for_chapter(
     chapter_name: str | None = None,
     limit: int | None = None,
 ) -> Dict[str, Any]:
+    log_progress(
+        "chapter.download.start",
+        chapter_url=chapter_url,
+        chapter_name=chapter_name,
+        limit=limit,
+    )
     image_urls = get_image_urls_from_pagecontainer(chapter_url)
     if limit is not None:
         image_urls = image_urls[:limit]
@@ -287,6 +299,14 @@ def download_images_for_chapter(
                     "size": result["size"],
                 }
             )
+            if idx == 1 or idx == len(image_urls) or idx % 10 == 0:
+                log_progress(
+                    "chapter.download.progress",
+                    chapter_name=folder_name,
+                    downloaded=len(downloaded),
+                    failed=len(failed),
+                    total=len(image_urls),
+                )
         except Exception as e:
             failed.append(
                 {
@@ -296,6 +316,13 @@ def download_images_for_chapter(
                 }
             )
 
+    log_progress(
+        "chapter.download.done",
+        chapter_name=folder_name,
+        total=len(image_urls),
+        downloaded_count=len(downloaded),
+        failed_count=len(failed),
+    )
     return {
         "chapter_url": chapter_url,
         "chapter_name": folder_name,
@@ -326,6 +353,14 @@ def upload_urls_to_s3(
     chapter_name: str | None = None,
     limit: int | None = None,
 ) -> Dict[str, Any]:
+    log_progress(
+        "chapter.upload.start",
+        chapter_url=chapter_url,
+        chapter_name=chapter_name,
+        bucket=bucket,
+        prefix=prefix,
+        limit=limit,
+    )
     download_result = download_images_for_chapter(
         chapter_url=chapter_url,
         chapter_name=chapter_name,
@@ -343,6 +378,14 @@ def upload_urls_to_s3(
         try:
             r = upload_file_to_s3(local_path, bucket, key)
             uploaded.append(r)
+            if len(uploaded) == 1 or len(uploaded) == len(download_result["downloaded"]) or len(uploaded) % 10 == 0:
+                log_progress(
+                    "chapter.upload.progress",
+                    chapter_name=download_result["chapter_name"],
+                    uploaded=len(uploaded),
+                    upload_failed=len(upload_failed),
+                    total=download_result["downloaded_count"],
+                )
         except Exception as e:
             upload_failed.append(
                 {
@@ -352,6 +395,13 @@ def upload_urls_to_s3(
                 }
             )
 
+    log_progress(
+        "chapter.upload.done",
+        chapter_name=download_result["chapter_name"],
+        downloaded_count=download_result["downloaded_count"],
+        upload_count=len(uploaded),
+        upload_failed_count=len(upload_failed),
+    )
     return {
         "chapter_url": chapter_url,
         "chapter_name": download_result["chapter_name"],
@@ -388,6 +438,39 @@ def filter_catalog_range(
     return items
 
 
+def extract_chapter_num_from_name(name: str | None) -> int | None:
+    if not name:
+        return None
+    match = re.match(r"^\s*(\d+)", str(name))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def get_resume_from_chapter(manifest: Dict[str, Any]) -> int | None:
+    chapters = manifest.get("chapters", [])
+    nums = [
+        num
+        for num in (extract_chapter_num_from_name(ch.get("name")) for ch in chapters)
+        if num is not None
+    ]
+    return max(nums) if nums else None
+
+
+def chapter_exists_in_manifest(manifest: Dict[str, Any], chapter_name: str) -> bool:
+    for chapter in manifest.get("chapters", []):
+        if chapter.get("name") == chapter_name and int(chapter.get("count", 0) or 0) > 0:
+            return True
+    return False
+
+
+def chapter_prefix_exists_in_s3(bucket: str, prefix: str, chapter_name: str) -> bool:
+    s3 = boto3.client("s3")
+    chapter_prefix = f"{prefix.rstrip('/')}/{chapter_name}/"
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=chapter_prefix, MaxKeys=1)
+    return bool(response.get("KeyCount", 0))
+
+
 def upload_title_to_s3(
     start_url: str,
     bucket: str,
@@ -400,6 +483,14 @@ def upload_title_to_s3(
     max_chapters: int | None = None,
     limit: int | None = None,
 ) -> Dict[str, Any]:
+    log_progress(
+        "title.upload.start",
+        start_url=start_url,
+        site_title=site_title,
+        bucket=bucket,
+        prefix=prefix,
+        manifest_key=manifest_key,
+    )
     catalog = get_catalog_dynamic(start_url=start_url, wait_sec=wait_sec)
     selected = filter_catalog_range(
         catalog=catalog,
@@ -409,13 +500,75 @@ def upload_title_to_s3(
     )
 
     manifest = load_manifest_from_s3(bucket, manifest_key)
+    resume_from_chapter = get_resume_from_chapter(manifest)
+    if resume_from_chapter is not None:
+        selected = [chapter for chapter in selected if int(chapter["num"]) >= resume_from_chapter]
+        log_progress(
+            "title.upload.resume",
+            site_title=site_title,
+            resume_from_chapter=resume_from_chapter,
+            selected_count=len(selected),
+            manifest_key=manifest_key,
+        )
+    else:
+        log_progress(
+            "title.upload.resume",
+            site_title=site_title,
+            resume_from_chapter=None,
+            selected_count=len(selected),
+            manifest_key=manifest_key,
+        )
 
     uploaded_chapters: List[Dict[str, Any]] = []
     failed_chapters: List[Dict[str, Any]] = []
+    skipped_chapters: List[Dict[str, Any]] = []
 
     for chapter in selected:
         chapter_name = build_chapter_storage_name(chapter)
+        chapter_num = int(chapter["num"])
+        if chapter_exists_in_manifest(manifest, chapter_name):
+            skipped_chapters.append(
+                {
+                    "num": chapter_num,
+                    "title": chapter.get("title"),
+                    "chapter_name": chapter_name,
+                    "reason": "manifest_exists",
+                }
+            )
+            log_progress(
+                "title.upload.chapter.skipped",
+                site_title=site_title,
+                chapter_num=chapter_num,
+                chapter_name=chapter_name,
+                reason="manifest_exists",
+            )
+            continue
+
+        if chapter_prefix_exists_in_s3(bucket, prefix, chapter_name):
+            skipped_chapters.append(
+                {
+                    "num": chapter_num,
+                    "title": chapter.get("title"),
+                    "chapter_name": chapter_name,
+                    "reason": "s3_prefix_exists",
+                }
+            )
+            log_progress(
+                "title.upload.chapter.skipped",
+                site_title=site_title,
+                chapter_num=chapter_num,
+                chapter_name=chapter_name,
+                reason="s3_prefix_exists",
+            )
+            continue
+
         try:
+            log_progress(
+                "title.upload.chapter.start",
+                site_title=site_title,
+                chapter_num=chapter_num,
+                chapter_name=chapter_name,
+            )
             result = upload_urls_to_s3(
                 chapter_url=chapter["url"],
                 bucket=bucket,
@@ -431,13 +584,21 @@ def upload_title_to_s3(
             )
             uploaded_chapters.append(
                 {
-                    "num": int(chapter["num"]),
+                    "num": chapter_num,
                     "title": chapter.get("title"),
                     "chapter_name": result["chapter_name"],
                     "upload_count": result["upload_count"],
                     "upload_failed_count": result["upload_failed_count"],
                     "downloaded_count": result["downloaded_count"],
                 }
+            )
+            log_progress(
+                "title.upload.chapter.done",
+                site_title=site_title,
+                chapter_num=chapter_num,
+                chapter_name=result["chapter_name"],
+                uploaded_count=result["upload_count"],
+                manifest_chapter_count=len(manifest.get("chapters", [])),
             )
         except Exception as e:
             failed_chapters.append(
@@ -448,8 +609,24 @@ def upload_title_to_s3(
                     "error": str(e),
                 }
             )
+            log_progress(
+                "title.upload.chapter.failed",
+                site_title=site_title,
+                chapter_num=chapter_num,
+                chapter_name=chapter_name,
+                error=str(e),
+            )
 
     manifest_result = save_manifest_to_s3(bucket, manifest_key, manifest)
+    log_progress(
+        "title.upload.done",
+        site_title=site_title,
+        selected_count=len(selected),
+        uploaded_count=len(uploaded_chapters),
+        skipped_count=len(skipped_chapters),
+        failed_count=len(failed_chapters),
+        manifest_key=manifest_key,
+    )
     return {
         "site_title": site_title,
         "start_url": start_url,
@@ -459,8 +636,11 @@ def upload_title_to_s3(
         "catalog_count": len(catalog),
         "selected_count": len(selected),
         "uploaded_count": len(uploaded_chapters),
+        "skipped_count": len(skipped_chapters),
         "failed_count": len(failed_chapters),
+        "resume_from_chapter": resume_from_chapter,
         "uploaded_chapters": uploaded_chapters,
+        "skipped_chapters": skipped_chapters,
         "failed_chapters": failed_chapters,
     }
 
@@ -475,6 +655,8 @@ def read_chromedriver_tail() -> str:
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     action = event.get("action", "healthcheck")
+    aws_request_id = getattr(context, "aws_request_id", None)
+    log_progress("lambda.invoke", action=action, aws_request_id=aws_request_id)
 
     try:
         if action == "healthcheck":
@@ -592,6 +774,60 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
             manifest_key = event.get("manifest_key", f"{prefix.rstrip('/')}/manifest.json")
             site_title = event.get("site_title", "Manga Viewer")
+            log_progress(
+                "lambda.upload_to_s3.start",
+                aws_request_id=aws_request_id,
+                site_title=site_title,
+                chapter_name=chapter_name,
+                bucket=bucket,
+                prefix=prefix,
+                manifest_key=manifest_key,
+            )
+
+            manifest = load_manifest_from_s3(bucket, manifest_key)
+            if chapter_exists_in_manifest(manifest, chapter_name):
+                log_progress(
+                    "lambda.upload_to_s3.skipped",
+                    aws_request_id=aws_request_id,
+                    site_title=site_title,
+                    chapter_name=chapter_name,
+                    reason="manifest_exists",
+                )
+                return {
+                    "statusCode": 200,
+                    "body": {
+                        "ok": True,
+                        "action": action,
+                        "chapter_name": chapter_name,
+                        "bucket": bucket,
+                        "prefix": prefix,
+                        "skipped": True,
+                        "reason": "manifest_exists",
+                        "manifest_chapter_count": len(manifest.get("chapters", [])),
+                    },
+                }
+
+            if chapter_prefix_exists_in_s3(bucket, prefix, chapter_name):
+                log_progress(
+                    "lambda.upload_to_s3.skipped",
+                    aws_request_id=aws_request_id,
+                    site_title=site_title,
+                    chapter_name=chapter_name,
+                    reason="s3_prefix_exists",
+                )
+                return {
+                    "statusCode": 200,
+                    "body": {
+                        "ok": True,
+                        "action": action,
+                        "chapter_name": chapter_name,
+                        "bucket": bucket,
+                        "prefix": prefix,
+                        "skipped": True,
+                        "reason": "s3_prefix_exists",
+                        "manifest_chapter_count": len(manifest.get("chapters", [])),
+                    },
+                }
 
             result = upload_urls_to_s3(
                 chapter_url=chapter_url,
@@ -609,6 +845,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 title=site_title
             )
             manifest_result = save_manifest_to_s3(bucket, manifest_key, manifest)
+            log_progress(
+                "lambda.upload_to_s3.done",
+                aws_request_id=aws_request_id,
+                site_title=site_title,
+                chapter_name=result["chapter_name"],
+                upload_count=result["upload_count"],
+                manifest_chapter_count=len(manifest["chapters"]),
+            )
 
             return {
                 "statusCode": 200,
@@ -1031,5 +1275,29 @@ def upsert_chapter_in_manifest(
     chapters.sort(key=lambda x: x["name"])
     manifest["chapters"] = chapters
     manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+    progress = manifest.get("progress") or {}
+    expected_chapters = int(progress.get("expected_chapters", 0) or 0)
+    completed_chapters = len(chapters)
+    manifest["progress"] = {
+        "status": (
+            "completed"
+            if expected_chapters > 0 and completed_chapters >= expected_chapters
+            else "downloading"
+            if expected_chapters > 0
+            else "completed"
+            if completed_chapters > 0
+            else "idle"
+        ),
+        "expected_chapters": expected_chapters,
+        "completed_chapters": completed_chapters,
+    }
+    log_progress(
+        "manifest.upsert",
+        title=manifest.get("title"),
+        chapter_name=chapter_name,
+        completed_chapters=completed_chapters,
+        expected_chapters=expected_chapters,
+        status=manifest["progress"]["status"],
+    )
 
     return manifest

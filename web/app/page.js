@@ -16,6 +16,11 @@ export default async function HomePage() {
       return {
         ...item,
         downloaded: Boolean(manifest?.chapters?.length),
+        progress: manifest?.progress || {
+          status: "idle",
+          expected_chapters: 0,
+          completed_chapters: 0
+        },
         manifest
       };
     })
@@ -56,8 +61,20 @@ export default async function HomePage() {
           <article key={item.slug} className="manga-card">
             <div className="cover-wrap">
               {item.image_url ? <img src={item.image_url} alt={item.title} className="cover-image" /> : null}
-              <div className={`status-pill ${item.downloaded ? "ready" : "idle"}`}>
-                {item.downloaded ? "Ready" : "Not downloaded"}
+              <div
+                className={`status-pill ${
+                  item.progress.status === "downloading"
+                    ? "downloading"
+                    : item.downloaded
+                      ? "ready"
+                      : "idle"
+                }`}
+              >
+                {item.progress.status === "downloading"
+                  ? "Downloading"
+                  : item.downloaded
+                    ? "Ready"
+                    : "Not downloaded"}
               </div>
             </div>
 
@@ -69,7 +86,7 @@ export default async function HomePage() {
                 <Link href={`/manga/${item.slug}`} className="primary-link">
                   Read
                 </Link>
-                <DownloadButton slug={item.slug} />
+                <DownloadButton slug={item.slug} initialProgress={item.progress} />
               </div>
             </div>
           </article>
