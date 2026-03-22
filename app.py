@@ -16,6 +16,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
 from datetime import datetime, timezone
+import unicodedata
 
 
 logger = logging.getLogger()
@@ -46,6 +47,8 @@ def ensure_dir(path: str) -> None:
 
 
 def safe_name(name: str) -> str:
+    name = unicodedata.normalize("NFKC", str(name or ""))
+    name = re.sub(r"[\x00-\x1f\x7f]+", " ", name)
     name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name or "untitled"
