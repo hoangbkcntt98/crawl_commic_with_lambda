@@ -51,6 +51,12 @@ def safe_name(name: str) -> str:
     return name or "untitled"
 
 
+def build_chapter_storage_name(chapter: Dict[str, Any]) -> str:
+    chapter_num = int(chapter["num"])
+    title = safe_name(chapter.get("title") or f"chapter_{chapter_num:03d}")
+    return f"{chapter_num:03d} - {title}"
+
+
 def build_driver() -> webdriver.Chrome:
     options = Options()
     options.binary_location = CHROME_BINARY
@@ -357,6 +363,105 @@ def upload_urls_to_s3(
     }
 
 
+def filter_catalog_range(
+    catalog: List[Dict[str, Any]],
+    from_chapter: int | None = None,
+    to_chapter: int | None = None,
+    max_chapters: int | None = None,
+) -> List[Dict[str, Any]]:
+    items = catalog
+
+    if from_chapter is not None:
+        items = [x for x in items if int(x["num"]) >= from_chapter]
+
+    if to_chapter is not None:
+        items = [x for x in items if int(x["num"]) <= to_chapter]
+
+    items = sorted(items, key=lambda x: int(x["num"]))
+
+    if max_chapters is not None:
+        items = items[:max_chapters]
+
+    return items
+
+
+def upload_title_to_s3(
+    start_url: str,
+    bucket: str,
+    prefix: str,
+    manifest_key: str,
+    site_title: str,
+    wait_sec: int = DEFAULT_WAIT_SEC,
+    from_chapter: int | None = None,
+    to_chapter: int | None = None,
+    max_chapters: int | None = None,
+    limit: int | None = None,
+) -> Dict[str, Any]:
+    catalog = get_catalog_dynamic(start_url=start_url, wait_sec=wait_sec)
+    selected = filter_catalog_range(
+        catalog=catalog,
+        from_chapter=from_chapter,
+        to_chapter=to_chapter,
+        max_chapters=max_chapters,
+    )
+
+    manifest = load_manifest_from_s3(bucket, manifest_key)
+
+    uploaded_chapters: List[Dict[str, Any]] = []
+    failed_chapters: List[Dict[str, Any]] = []
+
+    for chapter in selected:
+        chapter_name = build_chapter_storage_name(chapter)
+        try:
+            result = upload_urls_to_s3(
+                chapter_url=chapter["url"],
+                bucket=bucket,
+                prefix=prefix,
+                chapter_name=chapter_name,
+                limit=limit,
+            )
+            manifest = upsert_chapter_in_manifest(
+                manifest=manifest,
+                chapter_name=result["chapter_name"],
+                uploaded_items=result["uploaded"],
+                title=site_title,
+            )
+            uploaded_chapters.append(
+                {
+                    "num": int(chapter["num"]),
+                    "title": chapter.get("title"),
+                    "chapter_name": result["chapter_name"],
+                    "upload_count": result["upload_count"],
+                    "upload_failed_count": result["upload_failed_count"],
+                    "downloaded_count": result["downloaded_count"],
+                }
+            )
+        except Exception as e:
+            failed_chapters.append(
+                {
+                    "num": int(chapter["num"]),
+                    "title": chapter.get("title"),
+                    "chapter_name": chapter_name,
+                    "error": str(e),
+                }
+            )
+
+    manifest_result = save_manifest_to_s3(bucket, manifest_key, manifest)
+    return {
+        "site_title": site_title,
+        "start_url": start_url,
+        "bucket": bucket,
+        "prefix": prefix,
+        "manifest": manifest_result,
+        "catalog_count": len(catalog),
+        "selected_count": len(selected),
+        "uploaded_count": len(uploaded_chapters),
+        "failed_count": len(failed_chapters),
+        "uploaded_chapters": uploaded_chapters,
+        "failed_chapters": failed_chapters,
+    }
+
+
 def read_chromedriver_tail() -> str:
     try:
         with open("/tmp/chromedriver.log", "r", encoding="utf-8", errors="ignore") as f:
@@ -518,6 +623,48 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "manifest_chapter_count": len(manifest["chapters"]),
                     "upload_failed_preview": result["upload_failed"][:10],
                     "download_failed_preview": result["download_failed"][:10],
+                },
+            }
+
+        if action == "upload_title_to_s3":
+            start_url = event["start_url"]
+            bucket = event["bucket"]
+            prefix = event.get("prefix", "crawler")
+            manifest_key = event.get("manifest_key", f"{prefix.rstrip('/')}/manifest.json")
+            site_title = event.get("site_title", "Manga Viewer")
+            wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
+
+            from_chapter = event.get("from_chapter")
+            from_chapter = int(from_chapter) if from_chapter is not None else None
+
+            to_chapter = event.get("to_chapter")
+            to_chapter = int(to_chapter) if to_chapter is not None else None
+
+            max_chapters = event.get("max_chapters")
+            max_chapters = int(max_chapters) if max_chapters is not None else None
+
+            limit = event.get("limit")
+            limit = int(limit) if limit is not None else None
+
+            result = upload_title_to_s3(
+                start_url=start_url,
+                bucket=bucket,
+                prefix=prefix,
+                manifest_key=manifest_key,
+                site_title=site_title,
+                wait_sec=wait_sec,
+                from_chapter=from_chapter,
+                to_chapter=to_chapter,
+                max_chapters=max_chapters,
+                limit=limit,
+            )
+
+            return {
+                "statusCode": 200,
+                "body": {
+                    "ok": True,
+                    "action": action,
+                    **result,
                 },
             }
 
