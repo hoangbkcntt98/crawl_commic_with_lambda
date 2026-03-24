@@ -117,6 +117,11 @@ select {
   color: var(--text);
 }
 
+.ghost-button {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
 .primary-button:hover,
 .secondary-button:hover,
 .primary-link:hover,

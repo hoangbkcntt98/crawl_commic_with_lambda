@@ -451,7 +451,64 @@ def extract_chapter_num_from_name(name: str | None) -> int | None:
     return int(match.group(1))
 
 
+def parse_json_if_needed(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        if text[0] in "[{":
+            try:
+                return json.loads(text)
+            except Exception:
+                return value
+    return value
+
+
+def normalize_chapter_entry(chapter: Any) -> Dict[str, Any] | None:
+    chapter = parse_json_if_needed(chapter)
+
+    if isinstance(chapter, dict):
+        files = parse_json_if_needed(chapter.get("files", []))
+        if not isinstance(files, list):
+            files = []
+        return {
+            "name": str(chapter.get("name") or ""),
+            "count": int(chapter.get("count", 0) or 0),
+            "files": [str(item) for item in files],
+        }
+
+    if isinstance(chapter, str) and chapter.strip():
+        return {
+            "name": chapter.strip(),
+            "count": 0,
+            "files": [],
+        }
+
+    return None
+
+
+def normalize_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    chapters_raw = parse_json_if_needed(manifest.get("chapters", []))
+    if not isinstance(chapters_raw, list):
+        chapters_raw = []
+
+    normalized_chapters: List[Dict[str, Any]] = []
+    for chapter in chapters_raw:
+        normalized = normalize_chapter_entry(chapter)
+        if normalized:
+            normalized_chapters.append(normalized)
+
+    progress = parse_json_if_needed(manifest.get("progress", {}))
+    if not isinstance(progress, dict):
+        progress = {}
+
+    manifest["chapters"] = normalized_chapters
+    manifest["progress"] = progress
+    return manifest
+
+
 def get_resume_from_chapter(manifest: Dict[str, Any]) -> int | None:
+    manifest = normalize_manifest(manifest)
     chapters = manifest.get("chapters", [])
     nums = [
         num
@@ -462,6 +519,7 @@ def get_resume_from_chapter(manifest: Dict[str, Any]) -> int | None:
 
 
 def chapter_exists_in_manifest(manifest: Dict[str, Any], chapter_name: str) -> bool:
+    manifest = normalize_manifest(manifest)
     for chapter in manifest.get("chapters", []):
         if chapter.get("name") == chapter_name and int(chapter.get("count", 0) or 0) > 0:
             return True
@@ -529,16 +587,16 @@ def load_manifest(
 
         if row:
             title, storage_name, chapters, progress, updated_at = row
-            return {
+            return normalize_manifest({
                 "manga_id": str(manga_id),
                 "title": title,
                 "storage_name": storage_name,
                 "chapters": chapters or [],
                 "progress": progress or {},
                 "updated_at": updated_at.isoformat() if updated_at else None,
-            }
+            })
 
-        return {
+        return normalize_manifest({
             "manga_id": str(manga_id),
             "title": "Manga Viewer",
             "storage_name": None,
@@ -549,9 +607,9 @@ def load_manifest(
                 "expected_chapters": 0,
                 "completed_chapters": 0,
             },
-        }
+        })
 
-    return load_manifest_from_s3(bucket, key)
+    return normalize_manifest(load_manifest_from_s3(bucket, key))
 
 
 def save_manifest(
@@ -561,6 +619,7 @@ def save_manifest(
     manifest_table: str | None = None,
     manga_id: str | None = None,
 ) -> Dict[str, Any]:
+    manifest = normalize_manifest(dict(manifest))
     if manifest_table and manga_id:
         ensure_manifest_table_exists(manifest_table)
         with get_pg_conn() as conn:

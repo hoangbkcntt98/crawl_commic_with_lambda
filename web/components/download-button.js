@@ -1,11 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 
 export function DownloadButton({ slug, initialProgress }) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoadingProgress, setIsLoadingProgress] = useState(false);
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(
     initialProgress || {
@@ -14,7 +15,6 @@ export function DownloadButton({ slug, initialProgress }) {
       completed_chapters: 0
     }
   );
-  const timerRef = useRef(null);
 
   useEffect(() => {
     setProgress(
@@ -26,51 +26,39 @@ export function DownloadButton({ slug, initialProgress }) {
     );
   }, [initialProgress]);
 
-  useEffect(() => {
-    if (progress.status !== "downloading") {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+  async function handleLoadProgress() {
+    setIsLoadingProgress(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(`/api/manga/${slug}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Khong the cap nhat tien do.");
       }
-      return undefined;
+
+      const nextProgress = data.progress || {
+        status: "idle",
+        expected_chapters: 0,
+        completed_chapters: 0
+      };
+      setProgress(nextProgress);
+
+      if (nextProgress.status === "completed") {
+        setMessage("Download hoan tat.");
+      } else {
+        setMessage("Da load tien do moi nhat.");
+      }
+
+      startTransition(() => {
+        router.refresh();
+      });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setIsLoadingProgress(false);
     }
-
-    async function pollProgress() {
-      try {
-        const response = await fetch(`/api/manga/${slug}`, { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || "Khong the cap nhat tien do.");
-        }
-
-        const nextProgress = data.progress || {
-          status: "idle",
-          expected_chapters: 0,
-          completed_chapters: 0
-        };
-        setProgress(nextProgress);
-
-        if (nextProgress.status === "completed") {
-          setMessage("Download hoan tat.");
-          startTransition(() => {
-            router.refresh();
-          });
-        }
-      } catch (error) {
-        setMessage(error.message);
-      }
-    }
-
-    pollProgress();
-    timerRef.current = setInterval(pollProgress, 5000);
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [progress.status, router, slug]);
+  }
 
   async function handleDownload() {
     setIsSubmitting(true);
@@ -108,9 +96,16 @@ export function DownloadButton({ slug, initialProgress }) {
       <button
         className="secondary-button"
         onClick={handleDownload}
-        disabled={isSubmitting || progress.status === "downloading"}
+        disabled={isSubmitting}
       >
         {isSubmitting ? "Dang gui..." : progress.status === "downloading" ? "Downloading..." : "Download"}
+      </button>
+      <button
+        className="secondary-button ghost-button"
+        onClick={handleLoadProgress}
+        disabled={isLoadingProgress}
+      >
+        {isLoadingProgress ? "Dang load..." : "Load progress"}
       </button>
       {progress.expected_chapters > 0 ? (
         <p className="progress-text">

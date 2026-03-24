@@ -2,9 +2,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-function ReaderEmpty({ title, slug, progress }) {
+function ReaderEmpty({ title, slug, progress, onLoadProgress, isLoadingProgress }) {
   return (
     <div className="reader-empty">
       <h2>{title}</h2>
@@ -19,6 +19,9 @@ function ReaderEmpty({ title, slug, progress }) {
       <Link href={`/api/manga/${slug}/download`} className="ghost-link">
         API download
       </Link>
+      <button className="secondary-button ghost-button" onClick={onLoadProgress} disabled={isLoadingProgress}>
+        {isLoadingProgress ? "Dang load..." : "Load progress"}
+      </button>
     </div>
   );
 }
@@ -26,53 +29,44 @@ function ReaderEmpty({ title, slug, progress }) {
 export function ReaderClient({ item, manifest, slug }) {
   const [liveManifest, setLiveManifest] = useState(manifest);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const timerRef = useRef(null);
+  const [isLoadingProgress, setIsLoadingProgress] = useState(false);
 
   useEffect(() => {
     setCurrentIndex(0);
     setLiveManifest(manifest);
   }, [manifest?.updated_at, manifest]);
 
-  useEffect(() => {
-    const progressStatus = liveManifest?.progress?.status;
-    if (progressStatus !== "downloading") {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+  async function handleLoadProgress() {
+    setIsLoadingProgress(true);
+
+    try {
+      const response = await fetch(`/api/manga/${slug}`, { cache: "no-store" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Khong the cap nhat reader.");
       }
-      return undefined;
+
+      if (data.manifest) {
+        setLiveManifest(data.manifest);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoadingProgress(false);
     }
-
-    async function pollManifest() {
-      try {
-        const response = await fetch(`/api/manga/${slug}`, { cache: "no-store" });
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || "Khong the cap nhat reader.");
-        }
-
-        if (data.manifest) {
-          setLiveManifest(data.manifest);
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    }
-
-    pollManifest();
-    timerRef.current = setInterval(pollManifest, 5000);
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [liveManifest?.progress?.status, slug]);
+  }
 
   if (!liveManifest || !Array.isArray(liveManifest.chapters) || liveManifest.chapters.length === 0) {
-    return <ReaderEmpty title={item.title} slug={slug} progress={liveManifest?.progress} />;
+    return (
+      <ReaderEmpty
+        title={item.title}
+        slug={slug}
+        progress={liveManifest?.progress}
+        onLoadProgress={handleLoadProgress}
+        isLoadingProgress={isLoadingProgress}
+      />
+    );
   }
 
   const safeIndex = Math.min(currentIndex, liveManifest.chapters.length - 1);
@@ -121,6 +115,13 @@ export function ReaderClient({ item, manifest, slug }) {
             Completed chapters: {liveManifest.progress.completed_chapters}/
             {liveManifest.progress.expected_chapters || "?"}
           </span>
+          <button
+            className="secondary-button ghost-button"
+            onClick={handleLoadProgress}
+            disabled={isLoadingProgress}
+          >
+            {isLoadingProgress ? "Dang load..." : "Load progress"}
+          </button>
         </div>
       ) : null}
 
