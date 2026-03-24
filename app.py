@@ -507,6 +507,65 @@ def normalize_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return manifest
 
 
+def merge_manifests(base_manifest: Dict[str, Any], incoming_manifest: Dict[str, Any]) -> Dict[str, Any]:
+    base_manifest = normalize_manifest(dict(base_manifest))
+    incoming_manifest = normalize_manifest(dict(incoming_manifest))
+
+    merged_by_name: Dict[str, Dict[str, Any]] = {}
+
+    for chapter in base_manifest.get("chapters", []):
+        merged_by_name[chapter["name"]] = chapter
+
+    for chapter in incoming_manifest.get("chapters", []):
+        current = merged_by_name.get(chapter["name"])
+        if current is None or int(chapter.get("count", 0) or 0) >= int(current.get("count", 0) or 0):
+            merged_by_name[chapter["name"]] = chapter
+
+    merged_chapters = sorted(
+        merged_by_name.values(),
+        key=lambda chapter: chapter["name"],
+    )
+
+    base_progress = base_manifest.get("progress") or {}
+    incoming_progress = incoming_manifest.get("progress") or {}
+    expected_chapters = max(
+        int(base_progress.get("expected_chapters", 0) or 0),
+        int(incoming_progress.get("expected_chapters", 0) or 0),
+    )
+    completed_chapters = len(merged_chapters)
+
+    merged_manifest = {
+        **base_manifest,
+        **incoming_manifest,
+        "title": incoming_manifest.get("title") or base_manifest.get("title"),
+        "storage_name": incoming_manifest.get("storage_name") or base_manifest.get("storage_name"),
+        "chapters": merged_chapters,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "progress": {
+            "status": (
+                "completed"
+                if expected_chapters > 0 and completed_chapters >= expected_chapters
+                else "downloading"
+                if expected_chapters > 0
+                else "completed"
+                if completed_chapters > 0
+                else "idle"
+            ),
+            "expected_chapters": expected_chapters,
+            "completed_chapters": completed_chapters,
+        },
+    }
+
+    log_progress(
+        "manifest.merge",
+        title=merged_manifest.get("title"),
+        expected_chapters=expected_chapters,
+        completed_chapters=completed_chapters,
+    )
+
+    return merged_manifest
+
+
 def get_resume_from_chapter(manifest: Dict[str, Any]) -> int | None:
     manifest = normalize_manifest(manifest)
     chapters = manifest.get("chapters", [])
@@ -668,11 +727,35 @@ def save_manifest(
     manifest = normalize_manifest(dict(manifest))
     if manifest_table and manga_id:
         ensure_manifest_table_exists(manifest_table)
+        table_name = validate_sql_identifier(manifest_table, "manifest_table")
         with get_pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    insert into {validate_sql_identifier(manifest_table, 'manifest_table')}
+                    select title, storage_name, chapters, progress, updated_at
+                    from {table_name}
+                    where manga_id = %s
+                    for update
+                    """,
+                    (str(manga_id),),
+                )
+                row = cur.fetchone()
+
+                if row:
+                    title, storage_name, chapters, progress, updated_at = row
+                    existing_manifest = normalize_manifest({
+                        "manga_id": str(manga_id),
+                        "title": title,
+                        "storage_name": storage_name,
+                        "chapters": chapters or [],
+                        "progress": progress or {},
+                        "updated_at": updated_at.isoformat() if updated_at else None,
+                    })
+                    manifest = merge_manifests(existing_manifest, manifest)
+
+                cur.execute(
+                    f"""
+                    insert into {table_name}
                         (manga_id, title, storage_name, chapters, progress, updated_at)
                     values (%s, %s, %s, %s::jsonb, %s::jsonb, %s)
                     on conflict (manga_id) do update
