@@ -47,11 +47,11 @@ export default async function HomePage() {
 
       {!library.exists ? (
         <section className="empty-library">
-          <h2>Chua co file links.json tren S3</h2>
+          <h2>Chua co du lieu truyện trong database</h2>
           <p>
-            Bam nut <strong>Tao / cap nhat links.json</strong> o phia tren de trigger
-            action `list_browse_links_to_s3`. Sau khi Lambda chay xong, reload lai trang
-            nay de xem danh sach truyen.
+            Bam nut <strong>Dong bo danh sach truyện</strong> o phia tren de crawl danh
+            sach tu MangaRW va luu metadata vao database. Sau khi xong, reload lai trang
+            nay de xem thu vien.
           </p>
         </section>
       ) : null}

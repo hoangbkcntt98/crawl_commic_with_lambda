@@ -34,7 +34,7 @@ export function LibraryActions() {
   return (
     <div className="hero-actions">
       <button className="primary-button" onClick={handleSync} disabled={isSyncing}>
-        {isSyncing ? "Dang tao links.json..." : "Tao / cap nhat links.json"}
+        {isSyncing ? "Dang dong bo database..." : "Dong bo danh sach truyện"}
       </button>
       {message ? <p className="action-message">{message}</p> : null}
     </div>

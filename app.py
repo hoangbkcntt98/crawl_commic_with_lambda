@@ -17,6 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import json
 from datetime import datetime, timezone
 import unicodedata
+import psycopg
 
 
 logger = logging.getLogger()
@@ -31,6 +32,9 @@ CHROMEDRIVER_BINARY = os.getenv(
 DEFAULT_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 DEFAULT_WAIT_SEC = int(os.getenv("WAIT_SEC", "5"))
 DEFAULT_TMP_DIR = "/tmp/crawler"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DEFAULT_MANIFEST_TABLE = os.getenv("MANGA_MANIFEST_TABLE", "").strip()
+DEFAULT_LIBRARY_TABLE = os.getenv("MANGA_LIBRARY_TABLE", "manga_library").strip()
 
 HEADERS = {
     "User-Agent": (
@@ -471,11 +475,134 @@ def chapter_prefix_exists_in_s3(bucket: str, prefix: str, chapter_name: str) -> 
     return bool(response.get("KeyCount", 0))
 
 
+def validate_sql_identifier(name: str, label: str) -> str:
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(name or "")):
+        raise ValueError(f"Invalid {label}: {name}")
+    return name
+
+
+def get_pg_conn() -> psycopg.Connection:
+    if not DATABASE_URL:
+        raise ValueError("Missing DATABASE_URL environment variable.")
+    return psycopg.connect(DATABASE_URL)
+
+
+def ensure_manifest_table_exists(manifest_table: str) -> None:
+    manifest_table = validate_sql_identifier(manifest_table, "manifest_table")
+    with get_pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                create table if not exists {manifest_table} (
+                    manga_id text primary key,
+                    title text,
+                    storage_name text,
+                    chapters jsonb not null default '[]'::jsonb,
+                    progress jsonb not null default '{{}}'::jsonb,
+                    updated_at timestamptz
+                )
+                """
+            )
+        conn.commit()
+
+
+def load_manifest(
+    bucket: str,
+    key: str,
+    manifest_table: str | None = None,
+    manga_id: str | None = None,
+) -> Dict[str, Any]:
+    if manifest_table and manga_id:
+        ensure_manifest_table_exists(manifest_table)
+        with get_pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    select title, storage_name, chapters, progress, updated_at
+                    from {validate_sql_identifier(manifest_table, 'manifest_table')}
+                    where manga_id = %s
+                    limit 1
+                    """,
+                    (str(manga_id),),
+                )
+                row = cur.fetchone()
+
+        if row:
+            title, storage_name, chapters, progress, updated_at = row
+            return {
+                "manga_id": str(manga_id),
+                "title": title,
+                "storage_name": storage_name,
+                "chapters": chapters or [],
+                "progress": progress or {},
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+
+        return {
+            "manga_id": str(manga_id),
+            "title": "Manga Viewer",
+            "storage_name": None,
+            "updated_at": None,
+            "chapters": [],
+            "progress": {
+                "status": "idle",
+                "expected_chapters": 0,
+                "completed_chapters": 0,
+            },
+        }
+
+    return load_manifest_from_s3(bucket, key)
+
+
+def save_manifest(
+    bucket: str,
+    key: str,
+    manifest: Dict[str, Any],
+    manifest_table: str | None = None,
+    manga_id: str | None = None,
+) -> Dict[str, Any]:
+    if manifest_table and manga_id:
+        ensure_manifest_table_exists(manifest_table)
+        with get_pg_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    insert into {validate_sql_identifier(manifest_table, 'manifest_table')}
+                        (manga_id, title, storage_name, chapters, progress, updated_at)
+                    values (%s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                    on conflict (manga_id) do update
+                    set title = excluded.title,
+                        storage_name = excluded.storage_name,
+                        chapters = excluded.chapters,
+                        progress = excluded.progress,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(manga_id),
+                        manifest.get("title"),
+                        manifest.get("storage_name"),
+                        json.dumps(manifest.get("chapters", []), ensure_ascii=False),
+                        json.dumps(manifest.get("progress", {}), ensure_ascii=False),
+                        manifest.get("updated_at"),
+                    ),
+                )
+            conn.commit()
+        return {
+            "database": "postgres",
+            "table": manifest_table,
+            "manga_id": str(manga_id),
+        }
+
+    return save_manifest_to_s3(bucket, key, manifest)
+
+
 def upload_title_to_s3(
     start_url: str,
     bucket: str,
     prefix: str,
     manifest_key: str,
+    manifest_table: str | None,
+    manga_id: str | None,
     site_title: str,
     wait_sec: int = DEFAULT_WAIT_SEC,
     from_chapter: int | None = None,
@@ -490,6 +617,8 @@ def upload_title_to_s3(
         bucket=bucket,
         prefix=prefix,
         manifest_key=manifest_key,
+        manifest_table=manifest_table,
+        manga_id=manga_id,
     )
     catalog = get_catalog_dynamic(start_url=start_url, wait_sec=wait_sec)
     selected = filter_catalog_range(
@@ -499,7 +628,7 @@ def upload_title_to_s3(
         max_chapters=max_chapters,
     )
 
-    manifest = load_manifest_from_s3(bucket, manifest_key)
+    manifest = load_manifest(bucket, manifest_key, manifest_table=manifest_table, manga_id=manga_id)
     resume_from_chapter = get_resume_from_chapter(manifest)
     if resume_from_chapter is not None:
         selected = [chapter for chapter in selected if int(chapter["num"]) >= resume_from_chapter]
@@ -617,7 +746,13 @@ def upload_title_to_s3(
                 error=str(e),
             )
 
-    manifest_result = save_manifest_to_s3(bucket, manifest_key, manifest)
+    manifest_result = save_manifest(
+        bucket,
+        manifest_key,
+        manifest,
+        manifest_table=manifest_table,
+        manga_id=manga_id,
+    )
     log_progress(
         "title.upload.done",
         site_title=site_title,
@@ -773,6 +908,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             limit = int(limit) if limit is not None else None
 
             manifest_key = event.get("manifest_key", f"{prefix.rstrip('/')}/manifest.json")
+            manifest_table = event.get("manifest_table", DEFAULT_MANIFEST_TABLE) or None
+            manga_id = event.get("manga_id")
             site_title = event.get("site_title", "Manga Viewer")
             log_progress(
                 "lambda.upload_to_s3.start",
@@ -782,9 +919,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 bucket=bucket,
                 prefix=prefix,
                 manifest_key=manifest_key,
+                manifest_table=manifest_table,
+                manga_id=manga_id,
             )
 
-            manifest = load_manifest_from_s3(bucket, manifest_key)
+            manifest = load_manifest(
+                bucket,
+                manifest_key,
+                manifest_table=manifest_table,
+                manga_id=manga_id,
+            )
             if chapter_exists_in_manifest(manifest, chapter_name):
                 log_progress(
                     "lambda.upload_to_s3.skipped",
@@ -837,14 +981,25 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 limit=limit,
             )
 
-            manifest = load_manifest_from_s3(bucket, manifest_key)
+            manifest = load_manifest(
+                bucket,
+                manifest_key,
+                manifest_table=manifest_table,
+                manga_id=manga_id,
+            )
             manifest = upsert_chapter_in_manifest(
                 manifest=manifest,
                 chapter_name=result["chapter_name"],
                 uploaded_items=result["uploaded"],
                 title=site_title
             )
-            manifest_result = save_manifest_to_s3(bucket, manifest_key, manifest)
+            manifest_result = save_manifest(
+                bucket,
+                manifest_key,
+                manifest,
+                manifest_table=manifest_table,
+                manga_id=manga_id,
+            )
             log_progress(
                 "lambda.upload_to_s3.done",
                 aws_request_id=aws_request_id,
@@ -878,6 +1033,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             bucket = event["bucket"]
             prefix = event.get("prefix", "crawler")
             manifest_key = event.get("manifest_key", f"{prefix.rstrip('/')}/manifest.json")
+            manifest_table = event.get("manifest_table", DEFAULT_MANIFEST_TABLE) or None
+            manga_id = event.get("manga_id")
             site_title = event.get("site_title", "Manga Viewer")
             wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
 
@@ -898,6 +1055,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 bucket=bucket,
                 prefix=prefix,
                 manifest_key=manifest_key,
+                manifest_table=manifest_table,
+                manga_id=manga_id,
                 site_title=site_title,
                 wait_sec=wait_sec,
                 from_chapter=from_chapter,

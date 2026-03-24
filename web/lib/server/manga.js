@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import {
   BROWSE_SORT,
   BROWSE_URL,
-  LIBRARY_S3_KEY,
+  MANGA_MANIFEST_TABLE,
   MAX_IMAGES_PER_CHAPTER,
   MAX_PAGES,
   publicS3BaseUrl,
@@ -13,10 +13,16 @@ import {
   S3_PREFIX,
   WAIT_SEC
 } from "@/lib/config";
-import { getJsonFromS3, getJsonFromS3OrNull, invokeLambda, objectExists, putJsonToS3 } from "@/lib/server/aws";
+import { getJsonFromS3, invokeLambda, objectExists } from "@/lib/server/aws";
+import {
+  findLibraryItemById,
+  getLibraryFromDb,
+  getManifestFromDb,
+  saveLibraryToDb,
+  saveManifestToDb
+} from "@/lib/server/metadata-db";
 import {
   buildLegacyTitlePaths,
-  buildLibraryEntry,
   buildChapterStorageName,
   buildTitlePaths,
   canUseLegacyTitlePaths,
@@ -25,95 +31,81 @@ import {
 } from "@/lib/utils";
 
 export async function getLibrary() {
-  if (!S3_BUCKET) {
-    throw new Error("Missing S3_BUCKET environment variable.");
-  }
-
-  const data = await getJsonFromS3OrNull(S3_BUCKET, LIBRARY_S3_KEY);
-  if (!data) {
-    return {
-      title: "MangaRW Library",
-      updated_at: null,
-      items: [],
-      exists: false
-    };
-  }
-
-  const items = Array.isArray(data.items) ? data.items.map(buildLibraryEntry) : [];
-
-  return {
-    ...data,
-    items,
-    exists: true
-  };
+  return getLibraryFromDb();
 }
 
 export async function triggerLibrarySync() {
-  if (!S3_BUCKET) {
-    throw new Error("Missing S3_BUCKET environment variable.");
-  }
-
-  const syncPayload = {
-    action: "list_browse_links_to_s3",
-    browse_url: BROWSE_URL,
-    bucket: S3_BUCKET,
-    links_key: LIBRARY_S3_KEY,
-    html_key: `${S3_PREFIX}/list.html`,
-    wait_sec: WAIT_SEC,
-    max_pages: MAX_PAGES,
-    sort: BROWSE_SORT,
-    page_title: "MangaRW Library"
-  };
-
-  try {
-    return await invokeLambda(syncPayload, "RequestResponse");
-  } catch (error) {
-    if (!String(error?.message || "").includes("Unsupported action: list_browse_links_to_s3")) {
-      throw error;
-    }
-
-    const fallbackPayload = {
+  const result = await invokeLambda(
+    {
       action: "list_browse_links",
       browse_url: BROWSE_URL,
       wait_sec: WAIT_SEC,
       max_pages: MAX_PAGES,
       sort: BROWSE_SORT
-    };
+    },
+    "RequestResponse"
+  );
 
-    const result = await invokeLambda(fallbackPayload, "RequestResponse");
-    const payload = {
-      title: "MangaRW Library",
-      browse_url: BROWSE_URL,
-      sort: BROWSE_SORT,
-      max_pages: MAX_PAGES,
-      count: result.body?.count || 0,
-      updated_at: new Date().toISOString(),
-      items: result.body?.items || [],
-      pairs: result.body?.pairs || []
-    };
+  const payload = {
+    title: "MangaRW Library",
+    browse_url: BROWSE_URL,
+    sort: BROWSE_SORT,
+    max_pages: MAX_PAGES,
+    count: result.body?.count || 0,
+    updated_at: new Date().toISOString(),
+    items: result.body?.items || [],
+    pairs: result.body?.pairs || []
+  };
 
-    await putJsonToS3(S3_BUCKET, LIBRARY_S3_KEY, payload);
+  await saveLibraryToDb(payload);
 
-    return {
-      statusCode: 200,
-      body: {
-        ...payload,
-        links_json_public_url: `${publicS3BaseUrl}/${LIBRARY_S3_KEY}`,
-        fallback_used: true
-      }
-    };
-  }
+  return {
+    statusCode: 200,
+    body: {
+      ...payload,
+      persisted_to: "postgres"
+    }
+  };
 }
 
 export async function findMangaBySlug(slug) {
-  const library = await getLibrary();
-  const item = library.items.find((entry) => entry.slug === String(slug));
+  const [library, item] = await Promise.all([getLibrary(), findLibraryItemById(slug)]);
   return { library, item };
 }
 
 export async function getMangaManifest(slug, title = "") {
+  const dbManifest = await getManifestFromDb(slug);
+  if (dbManifest) {
+    const chapters = Array.isArray(dbManifest.chapters)
+      ? [...dbManifest.chapters].sort(
+          (left, right) => chapterSortValue(left.name) - chapterSortValue(right.name)
+        )
+      : [];
+    const expectedChapters = Number(dbManifest?.progress?.expected_chapters || 0);
+    const completedChapters = chapters.length;
+    const status =
+      expectedChapters > 0
+        ? completedChapters >= expectedChapters
+          ? "completed"
+          : "downloading"
+        : completedChapters > 0
+          ? "completed"
+          : "idle";
+
+    return {
+      ...dbManifest,
+      chapters,
+      progress: {
+        status,
+        expected_chapters: expectedChapters,
+        completed_chapters: completedChapters
+      },
+      assetBaseUrl: `${String(publicS3BaseUrl || "").replace(/\/+$/, "")}/${S3_PREFIX}/titles/${dbManifest.storage_name || buildTitlePaths(slug, title).storageName}`
+    };
+  }
+
   if (!S3_BUCKET) {
-    throw new Error("Missing S3_BUCKET environment variable.");
+    return null;
   }
 
   const primaryPaths = buildTitlePaths(slug, title);
@@ -210,6 +202,8 @@ export async function triggerMangaDownload(slug) {
       bucket: S3_BUCKET,
       prefix: `${S3_PREFIX}/${paths.prefix}`,
       manifest_key: `${S3_PREFIX}/${paths.manifestKey}`,
+      manifest_table: MANGA_MANIFEST_TABLE,
+      manga_id: mangaId,
       site_title: item.title
     };
 
@@ -220,9 +214,10 @@ export async function triggerMangaDownload(slug) {
     return payload;
   });
 
-  const existingManifest = await getJsonFromS3OrNull(S3_BUCKET, `${S3_PREFIX}/${paths.manifestKey}`);
-  await putJsonToS3(S3_BUCKET, `${S3_PREFIX}/${paths.manifestKey}`, {
+  const existingManifest = await getManifestFromDb(mangaId);
+  await saveManifestToDb(mangaId, {
     title: item.title,
+    storage_name: paths.storageName,
     updated_at: new Date().toISOString(),
     chapters: Array.isArray(existingManifest?.chapters) ? existingManifest.chapters : [],
     progress: {

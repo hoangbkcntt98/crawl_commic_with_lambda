@@ -8,7 +8,7 @@ export async function POST() {
     return NextResponse.json({
       ok: true,
       count: result.body?.count || 0,
-      linksJsonPublicUrl: result.body?.links_json_public_url || null
+      persistedTo: result.body?.persisted_to || "postgres"
     });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
