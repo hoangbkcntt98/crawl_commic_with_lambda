@@ -533,6 +533,52 @@ def chapter_prefix_exists_in_s3(bucket: str, prefix: str, chapter_name: str) -> 
     return bool(response.get("KeyCount", 0))
 
 
+def list_chapter_files_from_s3(bucket: str, prefix: str, chapter_name: str) -> List[str]:
+    s3 = boto3.client("s3")
+    chapter_prefix = f"{prefix.rstrip('/')}/{chapter_name}/"
+    continuation_token = None
+    file_names: List[str] = []
+
+    while True:
+        kwargs: Dict[str, Any] = {
+            "Bucket": bucket,
+            "Prefix": chapter_prefix,
+            "MaxKeys": 1000,
+        }
+        if continuation_token:
+            kwargs["ContinuationToken"] = continuation_token
+
+        response = s3.list_objects_v2(**kwargs)
+        for item in response.get("Contents", []):
+            key = item.get("Key", "")
+            if not key or key.endswith("/"):
+                continue
+            file_names.append(key.split("/")[-1])
+
+        if not response.get("IsTruncated"):
+            break
+
+        continuation_token = response.get("NextContinuationToken")
+
+    return sorted(set(file_names))
+
+
+def build_uploaded_items_from_s3(
+    bucket: str,
+    prefix: str,
+    chapter_name: str,
+) -> List[Dict[str, Any]]:
+    file_names = list_chapter_files_from_s3(bucket, prefix, chapter_name)
+    return [
+        {
+            "bucket": bucket,
+            "key": f"{prefix.rstrip('/')}/{chapter_name}/{file_name}",
+            "s3_uri": f"s3://{bucket}/{prefix.rstrip('/')}/{chapter_name}/{file_name}",
+        }
+        for file_name in file_names
+    ]
+
+
 def validate_sql_identifier(name: str, label: str) -> str:
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(name or "")):
         raise ValueError(f"Invalid {label}: {name}")
@@ -710,6 +756,7 @@ def upload_title_to_s3(
     uploaded_chapters: List[Dict[str, Any]] = []
     failed_chapters: List[Dict[str, Any]] = []
     skipped_chapters: List[Dict[str, Any]] = []
+    restored_chapters: List[Dict[str, Any]] = []
 
     for chapter in selected:
         chapter_name = build_chapter_storage_name(chapter)
@@ -733,6 +780,29 @@ def upload_title_to_s3(
             continue
 
         if chapter_prefix_exists_in_s3(bucket, prefix, chapter_name):
+            uploaded_items = build_uploaded_items_from_s3(bucket, prefix, chapter_name)
+            if uploaded_items:
+                manifest = upsert_chapter_in_manifest(
+                    manifest=manifest,
+                    chapter_name=chapter_name,
+                    uploaded_items=uploaded_items,
+                    title=site_title,
+                )
+                restored_chapters.append(
+                    {
+                        "num": chapter_num,
+                        "title": chapter.get("title"),
+                        "chapter_name": chapter_name,
+                        "file_count": len(uploaded_items),
+                    }
+                )
+                log_progress(
+                    "title.upload.chapter.restored_from_s3",
+                    site_title=site_title,
+                    chapter_num=chapter_num,
+                    chapter_name=chapter_name,
+                    file_count=len(uploaded_items),
+                )
             skipped_chapters.append(
                 {
                     "num": chapter_num,
@@ -817,6 +887,7 @@ def upload_title_to_s3(
         site_title=site_title,
         selected_count=len(selected),
         uploaded_count=len(uploaded_chapters),
+        restored_count=len(restored_chapters),
         skipped_count=len(skipped_chapters),
         failed_count=len(failed_chapters),
         manifest_key=manifest_key,
@@ -830,10 +901,12 @@ def upload_title_to_s3(
         "catalog_count": len(catalog),
         "selected_count": len(selected),
         "uploaded_count": len(uploaded_chapters),
+        "restored_count": len(restored_chapters),
         "skipped_count": len(skipped_chapters),
         "failed_count": len(failed_chapters),
         "resume_from_chapter": resume_from_chapter,
         "uploaded_chapters": uploaded_chapters,
+        "restored_chapters": restored_chapters,
         "skipped_chapters": skipped_chapters,
         "failed_chapters": failed_chapters,
     }
@@ -1011,6 +1084,32 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
 
             if chapter_prefix_exists_in_s3(bucket, prefix, chapter_name):
+                uploaded_items = build_uploaded_items_from_s3(bucket, prefix, chapter_name)
+                if uploaded_items:
+                    manifest = upsert_chapter_in_manifest(
+                        manifest=manifest,
+                        chapter_name=chapter_name,
+                        uploaded_items=uploaded_items,
+                        title=site_title,
+                    )
+                    manifest_result = save_manifest(
+                        bucket,
+                        manifest_key,
+                        manifest,
+                        manifest_table=manifest_table,
+                        manga_id=manga_id,
+                    )
+                    log_progress(
+                        "lambda.upload_to_s3.restored_from_s3",
+                        aws_request_id=aws_request_id,
+                        site_title=site_title,
+                        chapter_name=chapter_name,
+                        file_count=len(uploaded_items),
+                        manifest_chapter_count=len(manifest.get("chapters", [])),
+                    )
+                else:
+                    manifest_result = None
+
                 log_progress(
                     "lambda.upload_to_s3.skipped",
                     aws_request_id=aws_request_id,
@@ -1028,6 +1127,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         "prefix": prefix,
                         "skipped": True,
                         "reason": "s3_prefix_exists",
+                        "restored_from_s3": bool(uploaded_items),
+                        "restored_file_count": len(uploaded_items),
+                        "manifest": manifest_result,
                         "manifest_chapter_count": len(manifest.get("chapters", [])),
                     },
                 }
