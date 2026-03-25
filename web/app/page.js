@@ -3,16 +3,16 @@ import Link from "next/link";
 
 import { DownloadButton } from "@/components/download-button";
 import { LibraryActions } from "@/components/library-actions";
-import { MAX_PAGES } from "@/lib/config";
 import { getLibrary, getMangaManifest } from "@/lib/server/manga";
 
 export const dynamic = "force-dynamic";
+const PAGINATION_PAGES = 10;
 
 export default async function HomePage({ searchParams }) {
   const params = await searchParams;
   const currentPage = Math.min(
     Math.max(Number(params?.page || 1) || 1, 1),
-    Math.max(MAX_PAGES, 1)
+    PAGINATION_PAGES
   );
   const library = await getLibrary();
   const pageMatches = Number(library.current_page || 1) === currentPage;
@@ -55,7 +55,7 @@ export default async function HomePage({ searchParams }) {
       </section>
 
       <section className="pagination-bar">
-        {Array.from({ length: Math.max(MAX_PAGES, 1) }, (_, index) => {
+        {Array.from({ length: PAGINATION_PAGES }, (_, index) => {
           const page = index + 1;
           const isActive = page === currentPage;
           return (
