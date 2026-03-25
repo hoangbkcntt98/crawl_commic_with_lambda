@@ -141,6 +141,25 @@ export function ReaderClient({ item, manifest, slug }) {
           />
         ))}
       </div>
+
+      <div className="reader-floating-controls">
+        <button onClick={() => hasPrev && setCurrentIndex(safeIndex - 1)} disabled={!hasPrev}>
+          Prev
+        </button>
+        <select
+          value={safeIndex}
+          onChange={(event) => setCurrentIndex(Number(event.target.value))}
+        >
+          {liveManifest.chapters.map((entry, index) => (
+            <option key={`${entry.name}-floating`} value={index}>
+              {entry.name}
+            </option>
+          ))}
+        </select>
+        <button onClick={() => hasNext && setCurrentIndex(safeIndex + 1)} disabled={!hasNext}>
+          Next
+        </button>
+      </div>
     </div>
   );
 }
