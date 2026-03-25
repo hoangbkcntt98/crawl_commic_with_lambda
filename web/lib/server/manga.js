@@ -34,13 +34,14 @@ export async function getLibrary() {
   return getLibraryFromDb();
 }
 
-export async function triggerLibrarySync() {
+export async function triggerLibrarySync(page = 1) {
   const result = await invokeLambda(
     {
       action: "list_browse_links",
       browse_url: BROWSE_URL,
       wait_sec: WAIT_SEC,
-      max_pages: MAX_PAGES,
+      max_pages: 1,
+      start_page: Number(page),
       sort: BROWSE_SORT
     },
     "RequestResponse"
@@ -50,7 +51,8 @@ export async function triggerLibrarySync() {
     title: "MangaRW Library",
     browse_url: BROWSE_URL,
     sort: BROWSE_SORT,
-    max_pages: MAX_PAGES,
+    max_pages: 1,
+    current_page: Number(page),
     count: result.body?.count || 0,
     updated_at: new Date().toISOString(),
     items: result.body?.items || [],

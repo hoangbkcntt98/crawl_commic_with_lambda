@@ -77,7 +77,7 @@ export async function getLibraryFromDb() {
   const sql = getSql();
 
   const metaRows = await sql.unsafe(
-    `select title, updated_at, item_count from ${libraryTable} where manga_id = $1 limit 1`,
+    `select title, updated_at, item_count, extra from ${libraryTable} where manga_id = $1 limit 1`,
     [LIBRARY_META_ID]
   );
   const rows = await sql.unsafe(
@@ -105,6 +105,7 @@ export async function getLibraryFromDb() {
     title: meta?.title || "MangaRW Library",
     updated_at: meta?.updated_at ? new Date(meta.updated_at).toISOString() : null,
     count: items.length,
+    current_page: Number(meta?.extra?.current_page || 1),
     items,
     exists: items.length > 0
   };
@@ -188,14 +189,21 @@ export async function saveLibraryToDb(payload) {
 
     await trx.unsafe(
       `insert into ${libraryTable}
-        (manga_id, row_type, title, item_count, updated_at)
-       values ($1, 'meta', $2, $3, $4)
+        (manga_id, row_type, title, item_count, updated_at, extra)
+       values ($1, 'meta', $2, $3, $4, $5::jsonb)
        on conflict (manga_id) do update
        set row_type = excluded.row_type,
            title = excluded.title,
            item_count = excluded.item_count,
-           updated_at = excluded.updated_at`,
-      [LIBRARY_META_ID, payload.title || "MangaRW Library", normalizedItems.length, payload.updated_at]
+           updated_at = excluded.updated_at,
+           extra = excluded.extra`,
+      [
+        LIBRARY_META_ID,
+        payload.title || "MangaRW Library",
+        normalizedItems.length,
+        payload.updated_at,
+        JSON.stringify({ current_page: Number(payload.current_page || 1) })
+      ]
     );
   });
 
@@ -203,6 +211,7 @@ export async function saveLibraryToDb(payload) {
     title: payload.title || "MangaRW Library",
     updated_at: payload.updated_at,
     count: normalizedItems.length,
+    current_page: Number(payload.current_page || 1),
     items: normalizedItems,
     exists: normalizedItems.length > 0
   };

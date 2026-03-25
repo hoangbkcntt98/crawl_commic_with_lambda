@@ -146,6 +146,30 @@ select {
   color: var(--muted);
 }
 
+.pagination-bar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 24px;
+}
+
+.pagination-link {
+  min-width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 250, 242, 0.9);
+}
+
+.pagination-link.active {
+  background: var(--accent);
+  color: #fff8f2;
+  border-color: transparent;
+}
+
 .reader-progress-banner {
   display: flex;
   gap: 12px;

@@ -1322,11 +1322,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if action == "list_browse_links":
             browse_url = event["browse_url"]
             wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
+            start_page = int(event.get("start_page", 1))
             max_pages = int(event.get("max_pages", 1))
             sort = event.get("sort", "views_week")
             result = list_browse_links(
                 browse_url=browse_url,
                 wait_sec=wait_sec,
+                start_page=start_page,
                 max_pages=max_pages,
                 sort=sort,
             )
@@ -1343,6 +1345,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             browse_url = event["browse_url"]
             bucket = event["bucket"]
             wait_sec = int(event.get("wait_sec", DEFAULT_WAIT_SEC))
+            start_page = int(event.get("start_page", 1))
             max_pages = int(event.get("max_pages", 1))
             sort = event.get("sort", "views_week")
             links_key = event.get("links_key", "crawler-test/links.json")
@@ -1354,6 +1357,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 links_key=links_key,
                 html_key=html_key,
                 wait_sec=wait_sec,
+                start_page=start_page,
                 max_pages=max_pages,
                 sort=sort,
                 page_title=page_title,
@@ -1473,6 +1477,7 @@ def get_read_url_from_detail_page(driver: webdriver.Chrome, detail_url: str, wai
 def list_browse_links(
     browse_url: str,
     wait_sec: int = DEFAULT_WAIT_SEC,
+    start_page: int = 1,
     max_pages: int = 1,
     sort: str | None = "views_week",
 ) -> Dict[str, Any]:
@@ -1481,7 +1486,7 @@ def list_browse_links(
     seen_read_urls = set()
 
     try:
-        for page in range(1, max_pages + 1):
+        for page in range(start_page, start_page + max_pages):
             page_url = build_browse_page_url(browse_url, page=page, sort=sort)
             logger.info("Opening browse page=%s", page_url)
             driver.get(page_url)
@@ -1529,6 +1534,7 @@ def list_browse_links(
 
     return {
         "browse_url": browse_url,
+        "start_page": start_page,
         "max_pages": max_pages,
         "sort": sort,
         "count": len(items),
@@ -1576,6 +1582,7 @@ def crawl_browse_links_to_s3(
     links_key: str,
     html_key: str,
     wait_sec: int = DEFAULT_WAIT_SEC,
+    start_page: int = 1,
     max_pages: int = 1,
     sort: str | None = "views_week",
     page_title: str = "Manga Links",
@@ -1583,12 +1590,14 @@ def crawl_browse_links_to_s3(
     result = list_browse_links(
         browse_url=browse_url,
         wait_sec=wait_sec,
+        start_page=start_page,
         max_pages=max_pages,
         sort=sort,
     )
     payload = {
         "title": page_title,
         "browse_url": browse_url,
+        "start_page": start_page,
         "sort": sort,
         "max_pages": max_pages,
         "count": result["count"],
