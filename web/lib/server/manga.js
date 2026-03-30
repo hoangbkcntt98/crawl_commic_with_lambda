@@ -19,7 +19,8 @@ import {
   getLibraryFromDb,
   getManifestFromDb,
   saveLibraryToDb,
-  saveManifestToDb
+  saveManifestToDb,
+  upsertLibraryItemToDb
 } from "@/lib/server/metadata-db";
 import {
   buildLegacyTitlePaths,
@@ -32,6 +33,155 @@ import {
 
 export async function getLibrary() {
   return getLibraryFromDb();
+}
+
+function pickMetaContent(html, key) {
+  const patterns = [
+    new RegExp(`<meta[^>]+property=["']${key}["'][^>]+content=["']([^"']+)["']`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${key}["']`, "i"),
+    new RegExp(`<meta[^>]+name=["']${key}["'][^>]+content=["']([^"']+)["']`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${key}["']`, "i")
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return "";
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function extractJsonLdBlocks(html) {
+  const matches = html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  const blocks = [];
+
+  for (const match of matches) {
+    const raw = match?.[1]?.trim();
+    if (!raw) {
+      continue;
+    }
+
+    try {
+      blocks.push(JSON.parse(raw));
+    } catch {}
+  }
+
+  return blocks;
+}
+
+function stripRawSuffix(title) {
+  return String(title || "")
+    .replace(/\s+Raw(?:\s+Free)?$/i, "")
+    .replace(/\s+無料.*$/i, "")
+    .trim();
+}
+
+function findBreadcrumbTitleAndDetailUrl(jsonLdBlocks) {
+  for (const block of jsonLdBlocks) {
+    const graph = Array.isArray(block?.["@graph"]) ? block["@graph"] : [];
+    const breadcrumb = graph.find((entry) => entry?.["@type"] === "BreadcrumbList");
+    const elements = Array.isArray(breadcrumb?.itemListElement) ? breadcrumb.itemListElement : [];
+    const mangaItem = elements.find((entry) => Number(entry?.position) === 2);
+
+    if (mangaItem?.name || mangaItem?.item) {
+      return {
+        title: stripRawSuffix(mangaItem?.name || ""),
+        detailUrl: String(mangaItem?.item || "").trim()
+      };
+    }
+  }
+
+  return {
+    title: "",
+    detailUrl: ""
+  };
+}
+
+async function fetchPageHtml(url) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Khong the tai trang MangaRW: ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function extractReadUrlFromHtml(html, fallbackUrl = "") {
+  const canonical = pickMetaContent(html, "og:url");
+  if (canonical.includes("/read?id=")) {
+    return canonical;
+  }
+
+  const hrefMatch = html.match(/href=["']([^"']*\/read\?id=[^"']+)["']/i);
+  if (hrefMatch?.[1]) {
+    return new URL(hrefMatch[1], fallbackUrl || "https://mangarw.com").toString();
+  }
+
+  if (String(fallbackUrl).includes("/read?id=")) {
+    return fallbackUrl;
+  }
+
+  return "";
+}
+
+async function resolveManualMangaItem(inputUrl) {
+  const normalizedInput = String(inputUrl || "").trim();
+  if (!normalizedInput) {
+    throw new Error("Hay nhap duong dan truyen MangaRW.");
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(normalizedInput);
+  } catch {
+    throw new Error("Duong dan khong hop le.");
+  }
+
+  if (!/mangarw\.com$/i.test(parsedUrl.hostname)) {
+    throw new Error("Chi ho tro duong dan tu mangarw.com.");
+  }
+
+  const html = await fetchPageHtml(parsedUrl.toString());
+  const readUrl = extractReadUrlFromHtml(html, parsedUrl.toString());
+  if (!readUrl) {
+    throw new Error("Khong tim thay read URL tu trang da nhap.");
+  }
+
+  const jsonLdBlocks = extractJsonLdBlocks(html);
+  const breadcrumbInfo = findBreadcrumbTitleAndDetailUrl(jsonLdBlocks);
+  const ogTitle = decodeHtmlEntities(pickMetaContent(html, "og:title"));
+  const ogImage = decodeHtmlEntities(pickMetaContent(html, "og:image"));
+
+  const title = breadcrumbInfo.title || stripRawSuffix(ogTitle) || `Manga ${extractMangaId(readUrl)}`;
+  const detailUrl =
+    breadcrumbInfo.detailUrl ||
+    (parsedUrl.pathname.includes("/manga/") ? parsedUrl.toString() : "");
+
+  return {
+    title,
+    detail_url: detailUrl,
+    read_url: readUrl,
+    image_url: ogImage,
+    updated_at: new Date().toISOString()
+  };
 }
 
 export async function triggerLibrarySync(page = 1) {
@@ -67,6 +217,34 @@ export async function triggerLibrarySync(page = 1) {
       ...payload,
       persisted_to: "postgres"
     }
+  };
+}
+
+export async function addMangaToLibrary(inputUrl) {
+  const resolvedItem = await resolveManualMangaItem(inputUrl);
+  const mangaId = extractMangaId(resolvedItem.read_url);
+  if (!mangaId) {
+    throw new Error("Khong lay duoc manga id tu read URL.");
+  }
+
+  const catalogResult = await invokeLambda(
+    {
+      action: "get_catalog",
+      start_url: resolvedItem.read_url,
+      wait_sec: WAIT_SEC
+    },
+    "RequestResponse"
+  );
+
+  const catalog = Array.isArray(catalogResult.body?.catalog) ? catalogResult.body.catalog : [];
+  const savedItem = await upsertLibraryItemToDb({
+    ...resolvedItem,
+    slug: mangaId
+  });
+
+  return {
+    item: savedItem,
+    chapter_count: catalog.length
   };
 }
 

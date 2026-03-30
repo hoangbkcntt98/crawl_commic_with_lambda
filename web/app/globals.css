@@ -36,7 +36,8 @@ a {
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
 }
 
@@ -88,6 +89,28 @@ select {
   display: grid;
   gap: 12px;
   align-content: flex-start;
+}
+
+.input-label {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.url-input {
+  width: 100%;
+  min-height: 52px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 250, 242, 0.92);
+  color: var(--text);
+}
+
+.url-input:focus {
+  outline: 2px solid rgba(191, 91, 44, 0.25);
+  border-color: rgba(191, 91, 44, 0.4);
 }
 
 .primary-button,

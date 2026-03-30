@@ -217,6 +217,65 @@ export async function saveLibraryToDb(payload) {
   };
 }
 
+export async function upsertLibraryItemToDb(item) {
+  await ensureTables();
+  const sql = getSql();
+  const normalizedItem = buildLibraryEntry(item);
+
+  await sql.begin(async (trx) => {
+    await trx.unsafe(
+      `insert into ${libraryTable}
+        (manga_id, row_type, title, detail_url, read_url, image_url, slug, storage_name, updated_at)
+       values ($1, 'manga', $2, $3, $4, $5, $6, $7, $8)
+       on conflict (manga_id) do update
+       set row_type = excluded.row_type,
+           title = excluded.title,
+           detail_url = excluded.detail_url,
+           read_url = excluded.read_url,
+           image_url = excluded.image_url,
+           slug = excluded.slug,
+           storage_name = excluded.storage_name,
+           updated_at = excluded.updated_at`,
+      [
+        String(normalizedItem.slug),
+        normalizedItem.title,
+        normalizedItem.detail_url,
+        normalizedItem.read_url,
+        normalizedItem.image_url,
+        normalizedItem.slug,
+        normalizedItem.storageName,
+        normalizedItem.updated_at || new Date().toISOString()
+      ]
+    );
+
+    const countRows = await trx.unsafe(
+      `select count(*)::int as count from ${libraryTable} where row_type = 'manga'`
+    );
+    const totalCount = Number(countRows[0]?.count || 0);
+
+    await trx.unsafe(
+      `insert into ${libraryTable}
+        (manga_id, row_type, title, item_count, updated_at, extra)
+       values ($1, 'meta', $2, $3, $4, $5::jsonb)
+       on conflict (manga_id) do update
+       set row_type = excluded.row_type,
+           title = excluded.title,
+           item_count = excluded.item_count,
+           updated_at = excluded.updated_at,
+           extra = ${libraryTable}.extra || excluded.extra`,
+      [
+        LIBRARY_META_ID,
+        "MangaRW Library",
+        totalCount,
+        normalizedItem.updated_at || new Date().toISOString(),
+        JSON.stringify({ source: "manual_add" })
+      ]
+    );
+  });
+
+  return normalizedItem;
+}
+
 export async function getManifestFromDb(mangaId) {
   await ensureTables();
   const sql = getSql();
